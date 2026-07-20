@@ -1,16 +1,29 @@
 import os
 import json
+import secrets
 import subprocess
+import tempfile
 import time
 import select
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional
+from pathlib import Path
+from typing import Annotated, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException
+from fastapi import (
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    UploadFile,
+)
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, model_validator
+
+from extract_property import build_property_record
+from property_schema import PropertyRecord
 
 
 # ============================================================
@@ -241,6 +254,125 @@ app = FastAPI(
     ),
     version="2.1.0",
 )
+
+
+# ============================================================
+# DOCUMENT-INGESTION CONFIGURATION
+# ============================================================
+
+# This limit applies separately to the MLS PDF and disclosure
+# PDF. Files are streamed to temporary storage rather than read
+# into memory in one operation.
+MAX_PDF_BYTES = 20 * 1024 * 1024
+
+
+def _verify_ingestion_key(
+    supplied_key: Optional[str],
+):
+    """
+    Protect the Claude-backed document endpoint from public use.
+
+    INGESTION_API_KEY is an application-level credential chosen
+    by the service owner. It is distinct from ANTHROPIC_API_KEY,
+    which must never be sent by a client.
+    """
+
+    expected_key = os.getenv("INGESTION_API_KEY")
+
+    if not expected_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document ingestion is not configured: "
+                "INGESTION_API_KEY is missing"
+            ),
+        )
+
+    if (
+        not supplied_key
+        or not secrets.compare_digest(
+            supplied_key,
+            expected_key,
+        )
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid ingestion API key",
+            headers={"WWW-Authenticate": "X-Ingestion-Key"},
+        )
+
+
+async def _save_pdf_upload(
+    upload: UploadFile,
+    destination: Path,
+):
+    """
+    Stream an uploaded PDF to a request-scoped temporary file.
+
+    Content-Type is checked as an early diagnostic, and the PDF
+    file signature is checked after writing. The caller owns the
+    temporary directory and removes it after extraction.
+    """
+
+    allowed_content_types = {
+        "application/pdf",
+        "application/x-pdf",
+        "application/octet-stream",
+    }
+
+    if upload.content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"{upload.filename or 'Uploaded file'} "
+                "must be a PDF"
+            ),
+        )
+
+    total_bytes = 0
+
+    try:
+        with destination.open("wb") as output:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                total_bytes += len(chunk)
+
+                if total_bytes > MAX_PDF_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"{upload.filename or 'Uploaded file'} "
+                            "exceeds the 20 MB limit"
+                        ),
+                    )
+
+                output.write(chunk)
+
+        if total_bytes == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{upload.filename or 'Uploaded file'} "
+                    "is empty"
+                ),
+            )
+
+        with destination.open("rb") as saved_file:
+            if saved_file.read(5) != b"%PDF-":
+                raise HTTPException(
+                    status_code=415,
+                    detail=(
+                        f"{upload.filename or 'Uploaded file'} "
+                        "does not have a valid PDF signature"
+                    ),
+                )
+
+    finally:
+        await upload.close()
 
 
 # ============================================================
@@ -613,7 +745,129 @@ def health():
     return {
         "status": "ok",
         "r_worker_alive": r_worker._alive(),
+        "document_extraction": {
+            "anthropic_key_configured": bool(
+                os.getenv("ANTHROPIC_API_KEY")
+            ),
+            "anthropic_model_configured": bool(
+                os.getenv("ANTHROPIC_MODEL")
+            ),
+            "ingestion_auth_configured": bool(
+                os.getenv("INGESTION_API_KEY")
+            ),
+        },
     }
+
+
+@app.post(
+    "/extract_property_record",
+    response_model=PropertyRecord,
+)
+async def extract_property_record(
+    mls: Annotated[
+        UploadFile,
+        File(
+            ...,
+            description="MLS listing PDF",
+        ),
+    ],
+    disclosure: Annotated[
+        UploadFile,
+        File(
+            ...,
+            description="Seller property-disclosure PDF",
+        ),
+    ],
+    x_ingestion_key: Annotated[
+        Optional[str],
+        Header(
+            description=(
+                "Application-level credential for the "
+                "document-ingestion endpoint"
+            ),
+        ),
+    ] = None,
+):
+    """
+    Extract an evidence-backed canonical PropertyRecord from an
+    MLS listing PDF and seller disclosure PDF.
+
+    The documents are stored only in a request-scoped temporary
+    directory. PDF rendering, the Anthropic request, merging, and
+    Pydantic validation are delegated to build_property_record().
+    """
+
+    _verify_ingestion_key(x_ingestion_key)
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document ingestion is not configured: "
+                "ANTHROPIC_API_KEY is missing"
+            ),
+        )
+
+    anthropic_model = os.getenv("ANTHROPIC_MODEL")
+
+    if not anthropic_model:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document ingestion is not configured: "
+                "ANTHROPIC_MODEL is missing"
+            ),
+        )
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="property-extraction-",
+        ) as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            mls_path = temporary_path / "mls.pdf"
+            disclosure_path = (
+                temporary_path / "disclosure.pdf"
+            )
+
+            await _save_pdf_upload(
+                mls,
+                mls_path,
+            )
+            await _save_pdf_upload(
+                disclosure,
+                disclosure_path,
+            )
+
+            # PDF rendering and the external Claude request are
+            # blocking operations. Run them outside FastAPI's
+            # asynchronous event loop.
+            record = await run_in_threadpool(
+                build_property_record,
+                str(mls_path),
+                str(disclosure_path),
+                anthropic_model,
+            )
+
+            return record
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        # Keep operational detail in Render logs without returning
+        # credentials, document text, or internal paths to clients.
+        print(
+            "[document-extraction] failed: "
+            f"{type(error).__name__}: {error}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Property document extraction failed. "
+                "See service logs for the internal error."
+            ),
+        ) from error
 
 
 @app.post("/estimate_home_value")
