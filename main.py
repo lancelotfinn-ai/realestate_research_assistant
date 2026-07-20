@@ -177,6 +177,57 @@ def _valuation_cli(
             )
         }
 
+def _shape_valuation(result):
+    if not result or not result.get("ok"):
+        reason = (
+            result.get("reason")
+            if result
+            else None
+        )
+
+        return {
+            "error": (
+                reason
+                or "could not estimate valuation data"
+            )
+        }
+
+    return {
+        "estimate": result["estimate"],
+        "range_low": result["low"],
+        "range_high": result["high"],
+
+        "as_of": result.get("asof"),
+
+        "geography": {
+            "source": result.get(
+                "geography_source"
+            ),
+            "latitude": result.get("latitude"),
+            "longitude": result.get("longitude"),
+            "tract_fips": result.get("tract_fips"),
+            "tract_matched": result.get(
+                "tract_matched"
+            ),
+        },
+
+        "input_diagnostics": {
+            "n_provided": result.get(
+                "n_provided"
+            ),
+            "imputed_impact_share": result.get(
+                "imputed_impact_share"
+            ),
+        },
+
+        "suggested_follow_up_questions": (
+            result.get(
+                "suggest_asking_about",
+                [],
+            )
+        ),
+    }
+
 r_worker = RWorker()
 
 @asynccontextmanager
