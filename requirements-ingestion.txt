@@ -1,0 +1,4 @@
+anthropic>=0.49
+pdfplumber>=0.11
+pillow>=10
+pydantic>=2.8
