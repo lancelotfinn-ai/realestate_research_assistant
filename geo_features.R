@@ -326,9 +326,7 @@ geocode_address <- function(address) {
     return(NULL)
   }
 
-  tracts <- first_match$geographies[
-    ["Census Tracts"]
-  ]
+  tracts <- first_match$geographies[["Census Tracts"]]
 
   if (
     is.null(tracts) ||
@@ -434,9 +432,7 @@ lookup_tract_by_coordinates <- function(
     return(NA_character_)
   }
 
-  tracts <- parsed$result$geographies[
-    ["Census Tracts"]
-  ]
+  tracts <- parsed$result$geographies[["Census Tracts"]]
 
   if (
     is.null(tracts) ||
@@ -556,9 +552,7 @@ build_geography <- function(
 
   if (tract_matched) {
     for (variable_name in geo$acs_cols) {
-      tract_value <- matching_rows[
-        [variable_name]
-      ][1]
+      tract_value <- matching_rows[[variable_name]][1]
 
       if (
         length(tract_value) == 1 &&
