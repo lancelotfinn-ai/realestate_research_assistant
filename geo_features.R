@@ -14,19 +14,17 @@
 #   dist_grocery_miles
 #   dist_coast_miles
 #
-# Geography may originate from either:
+# Geography may originate from:
 #
 #   1. Latitude and longitude supplied by an MLS record, or
 #   2. A street address resolved by the Census Geocoder.
 #
-# When coordinates are supplied, the Census coordinate endpoint
-# is used only to identify the 2020 census tract. It does not
-# attempt to geocode the street address.
+# When coordinates are supplied, Census is used only to identify
+# the 2020 census tract. It does not geocode the street address.
 #
-# If the census tract cannot be identified or does not exist in
-# the stored ACS lookup, statewide median ACS values are used.
-# The supplied coordinates are still used for the spatial model
-# terms and distance calculations.
+# If the tract cannot be identified or is absent from the stored
+# ACS lookup, statewide median ACS values are used. The actual
+# coordinates are still used for spatial terms and distances.
 # ============================================================
 
 suppressMessages(
@@ -38,26 +36,31 @@ suppressMessages(
 # COORDINATE REFERENCE SYSTEMS
 # ============================================================
 
-# WGS84 latitude and longitude, used by Census and MLS systems.
+# WGS84 latitude and longitude.
 
 CRS_GEO <- 4326
 
-# UTM Zone 19N, suitable for distance calculations in Maine.
-# The grocery-store artifact is expected to use this CRS.
+# UTM Zone 19N, used for Maine distance calculations.
 
 CRS_PROJ <- 32619
 
 
 # ============================================================
-# BASIC VALIDATION HELPERS
+# VALIDATION HELPERS
 # ============================================================
 
 is_valid_coordinate_number <- function(x) {
-  if (is.null(x) || length(x) != 1 || is.na(x)) {
+  if (
+    is.null(x) ||
+    length(x) != 1 ||
+    is.na(x)
+  ) {
     return(FALSE)
   }
 
-  value <- suppressWarnings(as.numeric(x))
+  value <- suppressWarnings(
+    as.numeric(x)
+  )
 
   !is.na(value) && is.finite(value)
 }
@@ -86,13 +89,22 @@ is_valid_longitude <- function(x) {
 
 
 is_valid_tract_fips <- function(x) {
-  if (is.null(x) || length(x) != 1 || is.na(x)) {
+  if (
+    is.null(x) ||
+    length(x) != 1 ||
+    is.na(x)
+  ) {
     return(FALSE)
   }
 
-  value <- trimws(as.character(x))
+  value <- trimws(
+    as.character(x)
+  )
 
-  grepl("^[0-9]{11}$", value)
+  grepl(
+    "^[0-9]{11}$",
+    value
+  )
 }
 
 
@@ -102,30 +114,40 @@ is_valid_tract_fips <- function(x) {
 
 load_geo_artifacts <- function(dir = ".") {
   tract <- readRDS(
-    file.path(dir, "tract_acs_lookup.rds")
+    file.path(
+      dir,
+      "tract_acs_lookup.rds"
+    )
   )
 
   grocery <- readRDS(
-    file.path(dir, "grocery_stores_complete.rds")
+    file.path(
+      dir,
+      "grocery_stores_complete.rds"
+    )
   )
 
   coast <- readRDS(
-    file.path(dir, "coastline_raw.rds")
+    file.path(
+      dir,
+      "coastline_raw.rds"
+    )
   )
 
-  # Standardize tract identifiers as character values so
-  # comparisons do not lose leading zeroes.
+  # Keep tract identifiers as character values.
 
   tract$tract_fips <- as.character(
     tract$tract_fips
   )
 
-  # Ensure the grocery and coastline spatial layers use the
-  # same projected coordinate system for distance calculations.
+  # Validate and standardize spatial coordinate systems.
 
   if (is.na(st_crs(grocery))) {
     stop(
-      "grocery_stores_complete.rds has no coordinate reference system"
+      paste0(
+        "grocery_stores_complete.rds has no ",
+        "coordinate reference system"
+      )
     )
   }
 
@@ -138,7 +160,10 @@ load_geo_artifacts <- function(dir = ".") {
 
   if (is.na(st_crs(coast))) {
     stop(
-      "coastline_raw.rds has no coordinate reference system"
+      paste0(
+        "coastline_raw.rds has no ",
+        "coordinate reference system"
+      )
     )
   }
 
@@ -163,7 +188,10 @@ load_geo_artifacts <- function(dir = ".") {
     stop(
       paste0(
         "tract_acs_lookup.rds is missing columns: ",
-        paste(missing_acs_columns, collapse = ", ")
+        paste(
+          missing_acs_columns,
+          collapse = ", "
+        )
       )
     )
   }
@@ -201,11 +229,13 @@ load_geo_artifacts <- function(dir = ".") {
 #   longitude
 #   2020 Census tract GEOID
 #
-# Returns NULL if the address cannot be matched.
+# Returns NULL when the address cannot be matched.
 
 geocode_address <- function(address) {
   if (!requireNamespace("httr", quietly = TRUE)) {
-    stop("httr is required for Census geocoding")
+    stop(
+      "httr is required for Census geocoding"
+    )
   }
 
   has_address <- (
@@ -278,11 +308,15 @@ geocode_address <- function(address) {
   first_match <- matches[[1]]
 
   latitude <- suppressWarnings(
-    as.numeric(first_match$coordinates$y)
+    as.numeric(
+      first_match$coordinates$y
+    )
   )
 
   longitude <- suppressWarnings(
-    as.numeric(first_match$coordinates$x)
+    as.numeric(
+      first_match$coordinates$x
+    )
   )
 
   if (
@@ -325,15 +359,20 @@ geocode_address <- function(address) {
 
 # Uses existing coordinates to identify the 2020 census tract.
 #
-# Unlike geocode_address(), this function does not submit or
-# attempt to resolve a street address.
+# This function does not submit or resolve a street address.
 #
 # Returns an 11-digit tract GEOID or NA_character_.
 
-lookup_tract_by_coordinates <- function(lat, lon) {
+lookup_tract_by_coordinates <- function(
+    lat,
+    lon) {
+
   if (!requireNamespace("httr", quietly = TRUE)) {
     stop(
-      "httr is required for Census coordinate lookup"
+      paste0(
+        "httr is required for Census ",
+        "coordinate lookup"
+      )
     )
   }
 
@@ -453,7 +492,7 @@ minimum_distance_miles <- function(
     return(NA_real_)
   }
 
-  # International mile: 1,609.344 metres.
+  # One international mile equals 1,609.344 metres.
 
   min(finite_distances) / 1609.344
 }
@@ -470,11 +509,15 @@ build_geography <- function(
     geo) {
 
   if (!is_valid_latitude(lat)) {
-    stop("Invalid latitude supplied to build_geography()")
+    stop(
+      "Invalid latitude supplied to build_geography()"
+    )
   }
 
   if (!is_valid_longitude(lon)) {
-    stop("Invalid longitude supplied to build_geography()")
+    stop(
+      "Invalid longitude supplied to build_geography()"
+    )
   }
 
   latitude <- as.numeric(lat)
@@ -506,8 +549,8 @@ build_geography <- function(
 
   tract_matched <- nrow(matching_rows) > 0
 
-  # Begin with statewide medians. If a tract was matched,
-  # overwrite each median with its tract value when available.
+  # Begin with statewide medians. A matched tract overwrites
+  # each median when the tract contains a valid value.
 
   acs_values <- geo$tract_median
 
@@ -520,7 +563,9 @@ build_geography <- function(
       if (
         length(tract_value) == 1 &&
         !is.na(tract_value) &&
-        is.finite(as.numeric(tract_value))
+        is.finite(
+          as.numeric(tract_value)
+        )
       ) {
         acs_values[[variable_name]] <-
           as.numeric(tract_value)
@@ -534,7 +579,10 @@ build_geography <- function(
 
   subject_point <- st_sfc(
     st_point(
-      c(longitude, latitude)
+      c(
+        longitude,
+        latitude
+      )
     ),
     crs = CRS_GEO
   )
