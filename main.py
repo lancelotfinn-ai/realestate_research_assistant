@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List
 
 # ============================================================
@@ -137,16 +137,117 @@ app = FastAPI(
 # Pydantic Schemas matching Vertex AI expected parameters
 # ============================================================
 class ValuationRequest(BaseModel):
-    address: str = Field(..., description="Street address or town in Central Maine, e.g., 'Whitefield, ME'")
-    square_feet: Optional[float] = Field(None, description="Finished living area in square feet")
-    bedrooms: Optional[int] = Field(None, description="Total number of bedrooms")
-    bathrooms: Optional[float] = Field(None, description="Total number of bathrooms; half-baths count as 0.5")
-    lot_acres: Optional[float] = Field(None, description="Lot size in acres")
-    year_built: Optional[int] = Field(None, description="Year the home was constructed")
-    is_mobile_home: Optional[bool] = Field(None, description="True if a mobile, manufactured, or double-wide home")
-    is_condo: Optional[bool] = Field(None, description="True if the property is a condominium")
-    water_view: Optional[bool] = Field(None, description="True if the property has seasonal or year-round water views")
-    water_frontage: Optional[bool] = Field(None, description="True if the property has direct water or tidal frontage")
+    address: Optional[str] = Field(
+        None,
+        description=(
+            "Street address or town in Maine. Optional when latitude "
+            "and longitude are supplied."
+        ),
+    )
+
+    latitude: Optional[float] = Field(
+        None,
+        ge=-90,
+        le=90,
+        description="Property latitude, preferably from the MLS record.",
+    )
+
+    longitude: Optional[float] = Field(
+        None,
+        ge=-180,
+        le=180,
+        description="Property longitude, preferably from the MLS record.",
+    )
+
+    tract_fips: Optional[str] = Field(
+        None,
+        pattern=r"^\d{11}$",
+        description=(
+            "Optional 11-digit 2020 Census tract GEOID. If omitted, "
+            "the service will attempt to derive it from the coordinates."
+        ),
+    )
+
+    square_feet: Optional[float] = Field(
+        None,
+        gt=0,
+        description="Finished living area in square feet.",
+    )
+
+    bedrooms: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Total number of bedrooms.",
+    )
+
+    bathrooms: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Total number of bathrooms; half-baths count as 0.5.",
+    )
+
+    lot_acres: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Lot size in acres.",
+    )
+
+    year_built: Optional[int] = Field(
+        None,
+        ge=1600,
+        le=2100,
+        description="Year the home was constructed.",
+    )
+
+    is_mobile_home: Optional[bool] = Field(
+        None,
+        description=(
+            "True if the property is a mobile, manufactured, "
+            "or double-wide home."
+        ),
+    )
+
+    is_condo: Optional[bool] = Field(
+        None,
+        description="True if the property is a condominium.",
+    )
+
+    water_view: Optional[bool] = Field(
+        None,
+        description=(
+            "True if the property has seasonal or year-round water views."
+        ),
+    )
+
+    water_frontage: Optional[bool] = Field(
+        None,
+        description="True if the property has direct water or tidal frontage.",
+    )
+
+    @model_validator(mode="after")
+    def validate_location(self):
+        has_address = bool(self.address and self.address.strip())
+        has_latitude = self.latitude is not None
+        has_longitude = self.longitude is not None
+
+        if has_latitude != has_longitude:
+            raise ValueError(
+                "latitude and longitude must be supplied together"
+            )
+
+        if not has_address and not (has_latitude and has_longitude):
+            raise ValueError(
+                "provide either an address or both latitude and longitude"
+            )
+
+        if self.tract_fips is not None and not (
+            has_latitude and has_longitude
+        ):
+            raise ValueError(
+                "tract_fips may only be supplied with latitude and longitude"
+            )
+
+        return self
 
 class ListingFetchRequest(BaseModel):
     url: str = Field(..., description="The real estate listing URL (e.g., Zillow, Redfin, MLS) to scrape specs from.")
