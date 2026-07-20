@@ -1,54 +1,243 @@
 # ============================================================
-# r_worker.R — long-running valuation worker.
+# r_worker.R
 #
-# Sources valuation.R ONCE (loading sf + all model artifacts and reprojecting
-# the coastline), then serves one valuation per line on stdin, replying with
-# one JSON line per request on stdout. This removes the per-call artifact
-# reload that made the CLI shim slow.
+# Persistent R valuation worker.
 #
-# Protocol (newline-delimited JSON):
-#   in : {"id": <int>, "address": <str>, "user_input": { ... }}
-#   out: {"id": <int>, "ok": true/false, ...}            (value_property output)
-# Emits {"ready":true} once, after artifacts finish loading, so the parent
-# knows it can start sending requests.
+# This process:
 #
-# A malformed request yields an error reply but never kills the worker. When
-# stdin closes (parent gone) the loop exits cleanly.
+#   1. Loads valuation.R once.
+#   2. Loads the fitted model and geographic artifacts once.
+#   3. Reads one JSON request per line from standard input.
+#   4. Runs value_property().
+#   5. Writes one JSON response per line to standard output.
+#
+# Keeping this process alive avoids reloading the R model,
+# coastline, grocery-store data, and ACS data for every request.
+#
+# Input protocol:
+#
+# {
+#   "id": 1,
+#   "address": "16 Modin Lane, Penobscot, ME 04476",
+#   "geo_override": {
+#     "lat": 44.416855,
+#     "lon": -68.728069,
+#     "tract_fips": null
+#   },
+#   "user_input": {
+#     "SqFt.Finished.Total": 2199,
+#     "Total.Baths": 4
+#   }
+# }
+#
+# geo_override is optional.
+#
+# If valid coordinates are supplied, valuation.R uses them and
+# does not attempt Census street-address geocoding.
+#
+# If coordinates are supplied without tract_fips, valuation.R
+# asks Census only which tract contains those coordinates.
+#
+# Output protocol:
+#
+# {
+#   "id": 1,
+#   "ok": true,
+#   "estimate": 1000000,
+#   ...
+# }
+#
+# A malformed request or valuation error returns an error response
+# without terminating the worker.
 # ============================================================
 
-suppressMessages(library(jsonlite))
 
-# Sourcing valuation.R loads the model, defaults, time/season coefs, impact
-# ranking and all geo artifacts ONCE (see the load block at the top of that
-# file). `%||%` and value_property() come from it too.
+# ============================================================
+# DEPENDENCIES
+# ============================================================
+
+suppressMessages(
+  library(jsonlite)
+)
+
+
+# ============================================================
+# LOAD THE VALUATION ENGINE ONCE
+# ============================================================
+
+# Sourcing valuation.R also:
+#
+#   - sources geo_features.R,
+#   - loads the fitted model,
+#   - loads feature defaults,
+#   - loads time and season coefficients,
+#   - loads the impact ranking,
+#   - loads all geographic artifacts, and
+#   - defines value_property() and %||%.
+#
+# Nothing from valuation.R should write ordinary output to stdout
+# while it is being sourced, because stdout is reserved for the
+# newline-delimited JSON protocol.
+
 source("valuation.R")
 
-con <- file("stdin", open = "r", blocking = TRUE)
 
-cat('{"ready":true}\n'); flush(stdout())
+# ============================================================
+# OPEN STANDARD INPUT
+# ============================================================
+
+input_connection <- file(
+  "stdin",
+  open = "r",
+  blocking = TRUE
+)
+
+
+# ============================================================
+# SIGNAL READINESS TO PYTHON
+# ============================================================
+
+cat(
+  '{"ready":true}\n'
+)
+
+flush(stdout())
+
+
+# ============================================================
+# PROCESS REQUESTS
+# ============================================================
 
 repeat {
-  line <- readLines(con, n = 1, warn = FALSE)
-  if (length(line) == 0) break          # stdin closed -> exit
-  line <- trimws(line)
-  if (!nzchar(line)) next
+  request_line <- readLines(
+    input_connection,
+    n = 1,
+    warn = FALSE
+  )
 
-  out <- tryCatch({
-    req <- fromJSON(line, simplifyVector = FALSE)
-    res <- value_property(
-      user_input   = req$user_input %||% list(),
-      address      = req$address,
-      geo_override = req$geo_override
+  # An empty result means the parent process closed stdin.
+
+  if (length(request_line) == 0) {
+    break
+  }
+
+  request_line <- trimws(request_line)
+
+  # Ignore blank lines without terminating the worker.
+
+  if (!nzchar(request_line)) {
+    next
+  }
+
+  # ----------------------------------------------------------
+  # Parse the request
+  # ----------------------------------------------------------
+
+  request <- tryCatch(
+    fromJSON(
+      request_line,
+      simplifyVector = FALSE
+    ),
+    error = function(e) {
+      structure(
+        list(
+          parse_error = conditionMessage(e)
+        ),
+        class = "worker_parse_error"
+      )
+    }
+  )
+
+  # ----------------------------------------------------------
+  # Handle malformed JSON
+  # ----------------------------------------------------------
+
+  if (inherits(request, "worker_parse_error")) {
+    response <- list(
+      id = NULL,
+      ok = FALSE,
+      reason = paste0(
+        "invalid_json: ",
+        request$parse_error
+      )
     )
-    res$id <- req$id
-    res
-  }, error = function(e) {
-    rid <- tryCatch(fromJSON(line, simplifyVector = FALSE)$id,
-                    error = function(...) NULL)
-    list(id = rid, ok = FALSE,
-         reason = paste0("worker_error: ", conditionMessage(e)))
-  })
 
-  cat(toJSON(out, auto_unbox = TRUE, null = "null"), "\n", sep = "")
+    cat(
+      toJSON(
+        response,
+        auto_unbox = TRUE,
+        null = "null"
+      ),
+      "\n",
+      sep = ""
+    )
+
+    flush(stdout())
+
+    next
+  }
+
+  # Preserve the request ID so Python can associate the response
+  # with the correct request.
+
+  request_id <- request$id %||% NULL
+
+  # ----------------------------------------------------------
+  # Run the valuation
+  # ----------------------------------------------------------
+
+  response <- tryCatch(
+    {
+      result <- value_property(
+        user_input =
+          request$user_input %||% list(),
+
+        address =
+          request$address %||% NULL,
+
+        geo_override =
+          request$geo_override %||% NULL
+      )
+
+      result$id <- request_id
+
+      result
+    },
+    error = function(e) {
+      list(
+        id = request_id,
+        ok = FALSE,
+        reason = paste0(
+          "worker_error: ",
+          conditionMessage(e)
+        )
+      )
+    }
+  )
+
+  # ----------------------------------------------------------
+  # Return one JSON object on one line
+  # ----------------------------------------------------------
+
+  cat(
+    toJSON(
+      response,
+      auto_unbox = TRUE,
+      null = "null"
+    ),
+    "\n",
+    sep = ""
+  )
+
   flush(stdout())
 }
+
+
+# ============================================================
+# CLEAN SHUTDOWN
+# ============================================================
+
+try(
+  close(input_connection),
+  silent = TRUE
+)
