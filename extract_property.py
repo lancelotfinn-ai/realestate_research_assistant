@@ -13,8 +13,10 @@ from deterministic_extract import extract_mls_scalars
 from document_ingest import anthropic_content, ingest_pdf
 from property_schema import PropertyRecord
 
-
-PROMPT_PATH = Path(__file__).parent / "prompts" / "property_extraction_v1.txt"
+PROMPT_PATH = (
+    Path(__file__).parent
+    / "property_extraction_v1.txt"
+)
 
 
 def _is_fact(value: Any) -> bool:
