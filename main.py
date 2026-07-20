@@ -87,32 +87,95 @@ class RWorker:
                 self._ready = True
                 return
 
-    def value(self, address, user_input):
-        with self.lock:
-            if not self._alive():
-                self.start()
-            try:
-                self._ensure_ready()
-                self._counter += 1
-                rid = self._counter
-                req = json.dumps({"id": rid, "address": address,
-                                  "user_input": user_input}) + "\n"
-                self.proc.stdin.write(req.encode("utf-8"))
-                self.proc.stdin.flush()
-                deadline = time.time() + self.call_timeout
-                while True:
-                    line = self._read_line(deadline)
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    if obj.get("id") == rid:
-                        return obj
-            except Exception:
-                self.stop()
-                raise
+def value(
+    self,
+    address,
+    user_input,
+    geo_override=None,
+):
+    with self.lock:
+        if not self._alive():
+            self.start()
+
+        try:
+            self._ensure_ready()
+            self._counter += 1
+            rid = self._counter
+
+            request_data = {
+                "id": rid,
+                "address": address,
+                "user_input": user_input,
+                "geo_override": geo_override,
+            }
+
+            request_line = json.dumps(request_data) + "\n"
+
+            self.proc.stdin.write(
+                request_line.encode("utf-8")
+            )
+            self.proc.stdin.flush()
+
+            deadline = time.time() + self.call_timeout
+
+            while True:
+                line = self._read_line(deadline)
+
+                if not line:
+                    continue
+
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+
+                if obj.get("id") == rid:
+                    return obj
+
+        except Exception:
+            self.stop()
+            raise    
+
+def _valuation_cli(
+    address,
+    user_input,
+    geo_override=None,
+):
+    """
+    Per-call Rscript fallback if the persistent R worker fails.
+    """
+
+    try:
+        payload = json.dumps({
+            "address": address,
+            "user_input": user_input,
+            "geo_override": geo_override,
+        })
+
+        proc = subprocess.run(
+            ["Rscript", "valuation.R", payload],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+
+        if proc.returncode != 0:
+            return {
+                "error": "fallback valuation script failed",
+                "detail": proc.stderr.strip() or None,
+            }
+
+        return _shape_valuation(
+            json.loads(proc.stdout)
+        )
+
+    except Exception as e:
+        return {
+            "error": (
+                "valuation engine completely unavailable: "
+                f"{e}"
+            )
+        }
 
 r_worker = RWorker()
 
@@ -302,25 +365,58 @@ def health():
 @app.post("/estimate_home_value")
 def estimate_home_value(req: ValuationRequest):
     """
-    Calculates a model-based market-value ballpark range for a property in Central Maine.
-    Returns a JSON payload with a target estimate alongside statistical high/low boundaries.
+    Calculates a model-based market-value estimate.
+
+    Supplied coordinates take priority over address geocoding.
     """
+
     user_input = {}
     fields = req.model_dump()
-    
+
     for friendly, model_name in FIELD_MAP.items():
-        if fields.get(friendly) is not None:
-            user_input[model_name] = fields[friendly]
-            
+        value = fields.get(friendly)
+
+        if value is not None:
+            user_input[model_name] = value
+
     for friendly, model_name in BOOL_MAP.items():
-        if fields.get(friendly) is not None:
-            user_input[model_name] = 1 if fields[friendly] else 0
+        value = fields.get(friendly)
+
+        if value is not None:
+            user_input[model_name] = 1 if value else 0
+
+    geo_override = None
+
+    if (
+        req.latitude is not None
+        and req.longitude is not None
+    ):
+        geo_override = {
+            "lat": req.latitude,
+            "lon": req.longitude,
+            "tract_fips": req.tract_fips,
+        }
 
     try:
-        return _shape_valuation(r_worker.value(req.address, user_input))
+        result = r_worker.value(
+            address=req.address,
+            user_input=user_input,
+            geo_override=geo_override,
+        )
+
+        return _shape_valuation(result)
+
     except Exception as e:
-        print(f"[valuation] background worker failed ({e}); invoking CLI fallback...")
-        return _valuation_cli(req.address, user_input)
+        print(
+            "[valuation] background worker failed "
+            f"({e}); invoking CLI fallback..."
+        )
+
+        return _valuation_cli(
+            address=req.address,
+            user_input=user_input,
+            geo_override=geo_override,
+        )
 
 @app.post("/fetch_listing_specs")
 def fetch_listing_specs(req: ListingFetchRequest):
