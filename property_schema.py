@@ -190,6 +190,7 @@ class CoolingSystem(str, Enum):
 class BasementType(str, Enum):
     FULL = "full"
     FINISHED = "finished"
+    UNFINISHED = "unfinished"
     WALKOUT = "walkout"
     DAYLIGHT = "daylight"
     CRAWL_SPACE = "crawl_space"
@@ -198,7 +199,6 @@ class BasementType(str, Enum):
     DIRT_FLOOR = "dirt_floor"
     SUMP_PUMP = "sump_pump"
     OTHER = "other"
-
 
 class FoundationType(str, Enum):
     POURED_CONCRETE = "poured_concrete"
