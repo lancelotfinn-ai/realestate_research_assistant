@@ -518,6 +518,15 @@ class DisclosureFacts(StrictModel):
     roof_installation_year: Fact[int] = Field(default_factory=Fact[int])
     windows_installation_year: Fact[int] = Field(default_factory=Fact[int])
     heating_installation_year: Fact[int] = Field(default_factory=Fact[int])
+    septic_installation_year: Fact[int] = Field(
+        default_factory=Fact[int]
+    )
+    septic_last_pumped_year: Fact[int] = Field(
+        default_factory=Fact[int]
+    )
+    septic_last_pumped_date: Fact[date] = Field(
+        default_factory=Fact[date]
+    )
     septic_installation_year: Fact[int] = Field(default_factory=Fact[int])
     septic_last_pumped_date: Fact[date] = Field(default_factory=Fact[date])
 

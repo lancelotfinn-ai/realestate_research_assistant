@@ -32,6 +32,11 @@ MLS FEATURES
   values were visible. Otherwise retain complete=false.
 - Retain the complete original public remarks and raw feature inventory when
   available.
+- "Unfinished" is a valid basement characteristic. Record it as the enum value
+  "unfinished".
+- If a printed value does not match an available enum, use "other" when that
+  option exists, preserve the original wording in notes or raw_value, and do
+  not invent the closest enum value.
 
 DISCLOSURES
 
@@ -40,6 +45,12 @@ DISCLOSURES
   and material-defect narratives with their evidence.
 - A historical problem that the disclosure says was repaired is not necessarily
   an active problem. Record the history and repair text without exaggeration.
+- Preserve the precision of dates. If the document provides only a four-digit
+  year, populate the corresponding *_year field and leave the *_date field
+  unknown. Never invent a month or day.
+- For septic pumping information:
+    * use disclosures.septic_last_pumped_year when only a year is shown;
+    * use disclosures.septic_last_pumped_date only when a complete date is shown.
 
 REMARKS CLASSIFICATION
 

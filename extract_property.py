@@ -128,7 +128,20 @@ def build_property_record(
     # The separate training-compatible remarks classifier owns this field.
     record.remarks_classification = None
     return record
+    llm = _llm_candidate(
+        mls,
+        disclosure,
+        model=model,
+    )
 
+    llm = _normalize_candidate(llm)
+
+    merged = _merge_candidate(
+        deterministic,
+        llm,
+    )
+
+    record = PropertyRecord.model_validate(merged)
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -154,3 +167,111 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+def _normalize_candidate(
+    candidate: dict,
+) -> dict:
+    """
+    Normalize a small set of unambiguous representation
+    differences before strict PropertyRecord validation.
+
+    This function must not infer facts that are absent from
+    the documents.
+    """
+
+    normalized = deepcopy(candidate)
+
+    # --------------------------------------------------------
+    # Basement vocabulary
+    # --------------------------------------------------------
+
+    basement = (
+        normalized
+        .get("basement_foundation", {})
+        .get("basement_features", {})
+    )
+
+    basement_values = basement.get("values")
+
+    if isinstance(basement_values, list):
+        basement_aliases = {
+            "unfinished basement": "unfinished",
+            "unfinished": "unfinished",
+            "walk-out": "walkout",
+            "walk out": "walkout",
+            "walk-out access": "walkout",
+            "crawl": "crawl_space",
+            "crawlspace": "crawl_space",
+            "dirt": "dirt_floor",
+        }
+
+        normalized_values = []
+
+        for value in basement_values:
+            if isinstance(value, str):
+                cleaned = value.strip().lower()
+                normalized_values.append(
+                    basement_aliases.get(
+                        cleaned,
+                        cleaned,
+                    )
+                )
+            else:
+                normalized_values.append(value)
+
+        basement["values"] = normalized_values
+
+    # --------------------------------------------------------
+    # Septic pumping year
+    # --------------------------------------------------------
+
+    disclosures = normalized.setdefault(
+        "disclosures",
+        {},
+    )
+
+    pumped_date = disclosures.get(
+        "septic_last_pumped_date"
+    )
+
+    if (
+        isinstance(pumped_date, dict)
+        and pumped_date.get("status") == "known"
+    ):
+        value = pumped_date.get("value")
+
+        if (
+            isinstance(value, str)
+            and len(value.strip()) == 4
+            and value.strip().isdigit()
+        ):
+            year_fact = deepcopy(pumped_date)
+            year_fact["value"] = int(
+                value.strip()
+            )
+
+            disclosures[
+                "septic_last_pumped_year"
+            ] = year_fact
+
+            disclosures.pop(
+                "septic_last_pumped_date",
+                None,
+            )
+
+        elif (
+            isinstance(value, int)
+            and 1800 <= value <= 2100
+        ):
+            year_fact = deepcopy(pumped_date)
+
+            disclosures[
+                "septic_last_pumped_year"
+            ] = year_fact
+
+            disclosures.pop(
+                "septic_last_pumped_date",
+                None,
+            )
+
+    return normalized
