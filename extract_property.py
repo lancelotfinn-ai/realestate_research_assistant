@@ -38,6 +38,23 @@ PROMPT_PATH = (
 
 MAX_VALIDATION_PASSES = 10
 MAX_WARNING_VALUE_CHARS = 160
+MAX_EXTRACTION_ATTEMPTS = 2
+
+PROPERTY_RECORD_WRAPPER_KEYS = {
+    "property_record",
+    "record_property_evidence",
+    "record",
+    "result",
+}
+
+PROPERTY_RECORD_SECTION_KEYS = {
+    "address",
+    "listing",
+    "structure",
+    "water",
+    "source_text",
+    "disclosures",
+}
 
 REMARKS_PROMPT_VERSION = "remarks-v1-deploy-2026-07"
 REMARKS_MAX_CHARS = 24000
@@ -268,7 +285,79 @@ def _merge_candidate(
 # CLAUDE EXTRACTION
 # ---------------------------------------------------------------------------
 
-def _llm_candidate(
+def _looks_like_property_record(
+    value: Any,
+) -> bool:
+    """Return True when a dictionary resembles a PropertyRecord payload."""
+
+    return (
+        isinstance(value, dict)
+        and bool(
+            PROPERTY_RECORD_SECTION_KEYS
+            & set(value)
+        )
+    )
+
+
+def _candidate_has_known_fact(
+    value: Any,
+) -> bool:
+    """Detect an extraction containing at least one resolved Fact."""
+
+    if isinstance(value, dict):
+        if (
+            value.get("status") == "known"
+            and value.get("value") is not None
+        ):
+            return True
+
+        return any(
+            _candidate_has_known_fact(child)
+            for child in value.values()
+        )
+
+    if isinstance(value, list):
+        return any(
+            _candidate_has_known_fact(child)
+            for child in value
+        )
+
+    return False
+
+
+def _unwrap_property_candidate(
+    candidate: dict,
+) -> dict:
+    """
+    Remove a harmless extra wrapper occasionally emitted by Claude.
+
+    Sonnet has been observed to place the complete tool payload under
+    ``property_record`` or ``record_property_evidence`` even though the tool
+    schema already represents the record itself. Only unwrap a sole key whose
+    value independently resembles a PropertyRecord. This avoids guessing when
+    a genuinely unexpected structure is returned.
+    """
+
+    current = candidate
+
+    for _depth in range(2):
+        if len(current) != 1:
+            break
+
+        key, value = next(iter(current.items()))
+
+        if (
+            key not in PROPERTY_RECORD_WRAPPER_KEYS
+            or not _looks_like_property_record(value)
+        ):
+            break
+
+        current = value
+
+    return current
+
+
+def _llm_candidate_once(
     mls_document,
     disclosure_document,
     model: str,
@@ -344,7 +433,46 @@ def _llm_candidate(
             "was not a JSON object"
         )
 
-    return candidate
+    return _unwrap_property_candidate(candidate)
+
+
+def _llm_candidate(
+    mls_document,
+    disclosure_document,
+    model: str,
+) -> dict:
+    """
+    Extract one useful PropertyRecord candidate, retrying an empty response.
+
+    An empty candidate is an upstream extraction failure, not a valid record.
+    Raising here prevents the API from returning HTTP 200 with an all-unknown
+    object that downstream callers could mistake for successful extraction.
+    """
+
+    failures: list[str] = []
+
+    for attempt in range(1, MAX_EXTRACTION_ATTEMPTS + 1):
+        candidate = _llm_candidate_once(
+            mls_document,
+            disclosure_document,
+            model,
+        )
+
+        if (
+            _looks_like_property_record(candidate)
+            and _candidate_has_known_fact(candidate)
+        ):
+            return candidate
+
+        failures.append(
+            f"attempt {attempt} returned no known property facts"
+        )
+
+    raise RuntimeError(
+        "Claude property extraction produced no usable facts after "
+        f"{MAX_EXTRACTION_ATTEMPTS} attempts: "
+        + "; ".join(failures)
+    )
 
 
 def _first_public_remarks_evidence(
@@ -541,6 +669,231 @@ def _llm_remarks_candidate(
 # SAFE, UNAMBIGUOUS NORMALIZATION
 # ---------------------------------------------------------------------------
 
+def _append_extraction_warning(
+    candidate: dict,
+    warning: str,
+) -> None:
+    warnings = candidate.setdefault(
+        "extraction_warnings",
+        [],
+    )
+
+    if (
+        isinstance(warnings, list)
+        and warning not in warnings
+    ):
+        warnings.append(warning)
+
+
+def _fact_evidence_text(
+    fact: Any,
+) -> str:
+    """Flatten evidence labels and source text for conservative safeguards."""
+
+    if not isinstance(fact, dict):
+        return ""
+
+    pieces: list[str] = []
+
+    for evidence in fact.get("evidence", []):
+        if not isinstance(evidence, dict):
+            continue
+
+        for key in (
+            "field_label",
+            "raw_value",
+            "excerpt",
+        ):
+            value = evidence.get(key)
+
+            if value is not None:
+                pieces.append(str(value))
+
+    notes = fact.get("notes")
+
+    if notes is not None:
+        pieces.append(str(notes))
+
+    return " | ".join(pieces).lower()
+
+
+def _normalize_address_facts(
+    candidate: dict,
+) -> None:
+    """Wrap scalar address components as Facts instead of discarding them."""
+
+    address = candidate.get("address")
+
+    if not isinstance(address, dict):
+        return
+
+    full_address = address.get("full_address")
+    inherited_evidence: list[dict] = []
+
+    if isinstance(full_address, dict):
+        evidence = full_address.get("evidence")
+
+        if isinstance(evidence, list):
+            inherited_evidence = deepcopy(evidence)
+
+    for field_name in (
+        "street_number",
+        "street_name",
+        "unit",
+        "city",
+        "state",
+        "postal_code",
+        "county",
+    ):
+        value = address.get(field_name)
+
+        if value is None or isinstance(value, dict):
+            continue
+
+        address[field_name] = {
+            "status": "known",
+            "value": str(value),
+            "evidence": deepcopy(inherited_evidence),
+        }
+
+
+def _reset_unsupported_disclosure_inferences(
+    candidate: dict,
+) -> None:
+    """
+    Enforce recurring disclosure semantics that prompting alone did not fix.
+
+    "Not tested" does not establish that an issue is absent. Likewise, an
+    answer about water, leakage, a sump pump, or sewer backup does not by
+    itself establish whether the foundation has a structural problem.
+    """
+
+    disclosures = candidate.get("disclosures")
+
+    if not isinstance(disclosures, dict):
+        return
+
+    for field_name in (
+        "mold_reported",
+        "radon_issue_reported",
+    ):
+        fact = disclosures.get(field_name)
+
+        if (
+            not isinstance(fact, dict)
+            or fact.get("status") != "known"
+            or fact.get("value") is not False
+        ):
+            continue
+
+        evidence_text = _fact_evidence_text(fact)
+
+        if (
+            "test" in evidence_text
+            and any(
+                phrase in evidence_text
+                for phrase in (
+                    "tested | no",
+                    "tested for mold | no",
+                    "has the property been tested",
+                    "property ever been tested",
+                    "not tested",
+                    "never been tested",
+                )
+            )
+        ):
+            disclosures[field_name] = {}
+            _append_extraction_warning(
+                candidate,
+                f"Reset disclosures.{field_name} to unknown because the "
+                "evidence establishes only that testing was not performed, "
+                "not that the issue is absent.",
+            )
+
+    foundation = disclosures.get(
+        "foundation_problem"
+    )
+
+    if (
+        isinstance(foundation, dict)
+        and foundation.get("status") == "known"
+    ):
+        evidence_text = _fact_evidence_text(
+            foundation
+        )
+        structural_signals = (
+            "foundation problem",
+            "foundation defect",
+            "structural",
+            "foundation crack",
+            "settling",
+            "settlement",
+            "bowing",
+            "foundation movement",
+            "foundation shifting",
+            "failing foundation",
+        )
+
+        if not any(
+            signal in evidence_text
+            for signal in structural_signals
+        ):
+            disclosures["foundation_problem"] = {}
+            _append_extraction_warning(
+                candidate,
+                "Reset disclosures.foundation_problem to unknown because "
+                "the cited evidence did not explicitly address a structural "
+                "foundation problem.",
+            )
+
+
+def _remove_road_only_water_access(
+    candidate: dict,
+) -> None:
+    """Prevent a road right-of-way from becoming waterfront access."""
+
+    water = candidate.get("water")
+
+    if not isinstance(water, dict):
+        return
+
+    access = water.get("access_types")
+
+    if not isinstance(access, dict):
+        return
+
+    values = access.get("values")
+
+    if not isinstance(values, list):
+        return
+
+    evidence = access.get("evidence", [])
+    labels = [
+        str(item.get("field_label", "")).strip().lower()
+        for item in evidence
+        if isinstance(item, dict)
+    ]
+
+    if (
+        "right_of_way" in values
+        and labels
+        and all(
+            label in {"road", "roads"}
+            for label in labels
+        )
+    ):
+        access["values"] = [
+            value
+            for value in values
+            if value != "right_of_way"
+        ]
+        access["complete"] = False
+        _append_extraction_warning(
+            candidate,
+            "Removed water.access_types right_of_way because its only "
+            "evidence was the MLS road field, not a waterfront-access field.",
+        )
+
 def _normalize_candidate(
     candidate: dict,
 ) -> dict:
@@ -553,6 +906,12 @@ def _normalize_candidate(
     """
 
     normalized = deepcopy(candidate)
+
+    _normalize_address_facts(normalized)
+    _reset_unsupported_disclosure_inferences(
+        normalized
+    )
+    _remove_road_only_water_access(normalized)
 
     # Normalize common basement label variants when the relevant structures
     # are dictionaries/lists. Unrecognized values are left untouched so the
@@ -941,6 +1300,18 @@ def build_property_record(
     )
 
     record = _validate_best_effort(merged)
+
+    if not _candidate_has_known_fact(
+        record.model_dump(
+            mode="json",
+            exclude_none=False,
+        )
+    ):
+        raise RuntimeError(
+            "Property extraction produced an all-unknown record after "
+            "normalization and validation. Refusing to report it as a "
+            "successful extraction."
+        )
 
     # Remarks classification is deliberately separate from factual document
     # extraction. A classifier failure must not discard the valid factual
