@@ -1,0 +1,1114 @@
+{
+  "metadata": {
+    "model_description": "Maine statewide hedonic price model, log(Closed.Price)",
+    "dependent_variable": "log(Closed.Price)",
+    "n_observations": 11010,
+    "r_squared": 0.8286,
+    "adj_r_squared": 0.8267,
+    "intercept": 11.5349,
+    "training_period": "December 7, 2025 to April 7, 2026",
+    "geography": "Maine statewide, single-family homes",
+    "notes": "Dependent variable is log(Closed.Price). To get a price prediction, compute sum(coefficient * feature_value) for all terms, then exponentiate: exp(linear_combination). Spline terms (ns()) require the original knot positions from the model object -- the agent should use the predict() approach via a hosted R service rather than manually applying spline coefficients. For the agent, the simplified approach is to use only the linear (non-spline) terms for a rough estimate, with the caveat that the spline terms add meaningful precision."
+  },
+  "spline_terms": ["splines::ns(log(1 + SqFt.Finished.Total), 3)1", "splines::ns(log(1 + SqFt.Finished.Total), 3)3", "splines::ns(log(1 + SqFt.Finished.Total), 3)2", "splines::ns(Geo.Lon, 3)3", "splines::ns(Geo.Lon, 3)2", "splines::ns(Geo.Lat, 3)2", "splines::ns(Geo.Lat, 3)3", "splines::ns(Geo.Lat, 3)1", "splines::ns(Geo.Lon, 3)1"],
+  "coefficients": {
+    "is_mh": {
+      "variable": "is_mh",
+      "label": "is_mh",
+      "coefficient": -0.3775,
+      "std_error": 0.0159,
+      "pct_effect": -31.4444,
+      "p_value": 3.2529e-122,
+      "significant": true
+    },
+    "bachelors_plus_rate": {
+      "variable": "bachelors_plus_rate",
+      "label": "tract college education rate",
+      "coefficient": 0.7471,
+      "std_error": 0.033,
+      "pct_effect": 111.0899,
+      "p_value": 1.1071e-110,
+      "significant": true
+    },
+    "coalesce(rem_condition, 3)": {
+      "variable": "coalesce(rem_condition, 3)",
+      "label": "coalesce(rem_condition, 3)",
+      "coefficient": 0.0643,
+      "std_error": 0.0037,
+      "pct_effect": 6.6362,
+      "p_value": 5.8325e-65,
+      "significant": true
+    },
+    "log(dist_coast_miles + 0.5)": {
+      "variable": "log(dist_coast_miles + 0.5)",
+      "label": "log distance to coast",
+      "coefficient": -0.0845,
+      "std_error": 0.0055,
+      "pct_effect": -8.0996,
+      "p_value": 3.3397e-53,
+      "significant": true
+    },
+    "rem_lifestyle_luxury": {
+      "variable": "rem_lifestyle_luxury",
+      "label": "luxury lifestyle tier",
+      "coefficient": 0.2227,
+      "std_error": 0.0155,
+      "pct_effect": 24.9446,
+      "p_value": 3.5359e-46,
+      "significant": true
+    },
+    "rem_known_defects": {
+      "variable": "rem_known_defects",
+      "label": "known defects disclosed",
+      "coefficient": -0.1665,
+      "std_error": 0.0123,
+      "pct_effect": -15.3338,
+      "p_value": 1.5308e-41,
+      "significant": true
+    },
+    "feat_loc_ski": {
+      "variable": "feat_loc_ski",
+      "label": "ski resort area",
+      "coefficient": 0.2433,
+      "std_error": 0.0198,
+      "pct_effect": 27.5457,
+      "p_value": 2.0293e-34,
+      "significant": true
+    },
+    "feat_water_view": {
+      "variable": "feat_water_view",
+      "label": "water view",
+      "coefficient": 0.1521,
+      "std_error": 0.0125,
+      "pct_effect": 16.4248,
+      "p_value": 5.8074e-34,
+      "significant": true
+    },
+    "Total.Baths": {
+      "variable": "Total.Baths",
+      "label": "total bathrooms",
+      "coefficient": 0.1001,
+      "std_error": 0.0084,
+      "pct_effect": 10.53,
+      "p_value": 3.4012e-32,
+      "significant": true
+    },
+    "rem_distress_strong": {
+      "variable": "rem_distress_strong",
+      "label": "strong distress signal (as-is, estate, etc.)",
+      "coefficient": -0.1915,
+      "std_error": 0.017,
+      "pct_effect": -17.4258,
+      "p_value": 4.0004e-29,
+      "significant": true
+    },
+    "rem_lifestyle_invest": {
+      "variable": "rem_lifestyle_invest",
+      "label": "investment property tier",
+      "coefficient": -0.1294,
+      "std_error": 0.0123,
+      "pct_effect": -12.1336,
+      "p_value": 1.3203e-25,
+      "significant": true
+    },
+    "is_condo": {
+      "variable": "is_condo",
+      "label": "is_condo",
+      "coefficient": -0.1262,
+      "std_error": 0.0126,
+      "pct_effect": -11.8602,
+      "p_value": 1.7586e-23,
+      "significant": true
+    },
+    "rem_as_is": {
+      "variable": "rem_as_is",
+      "label": "sold as-is",
+      "coefficient": -0.2111,
+      "std_error": 0.0217,
+      "pct_effect": -19.0347,
+      "p_value": 2.8027e-22,
+      "significant": true
+    },
+    "poverty_rate": {
+      "variable": "poverty_rate",
+      "label": "tract poverty rate",
+      "coefficient": -0.6091,
+      "std_error": 0.0647,
+      "pct_effect": -45.6147,
+      "p_value": 5.7535e-21,
+      "significant": true
+    },
+    "rem_distress_mod": {
+      "variable": "rem_distress_mod",
+      "label": "moderate distress signal",
+      "coefficient": -0.0961,
+      "std_error": 0.0107,
+      "pct_effect": -9.1635,
+      "p_value": 3.3789e-19,
+      "significant": true
+    },
+    "log(Lot.Size.Acres.... + 0.05)": {
+      "variable": "log(Lot.Size.Acres.... + 0.05)",
+      "label": "log lot size",
+      "coefficient": 0.0558,
+      "std_error": 0.0067,
+      "pct_effect": 5.7365,
+      "p_value": 7.457e-17,
+      "significant": true
+    },
+    "feat_style_newenglander": {
+      "variable": "feat_style_newenglander",
+      "label": "New Englander style",
+      "coefficient": -0.0982,
+      "std_error": 0.0121,
+      "pct_effect": -9.3533,
+      "p_value": 4.271e-16,
+      "significant": true
+    },
+    "feat_style_cottage": {
+      "variable": "feat_style_cottage",
+      "label": "Cottage style",
+      "coefficient": 0.102,
+      "std_error": 0.0127,
+      "pct_effect": 10.7362,
+      "p_value": 9.5596e-16,
+      "significant": true
+    },
+    "feat_cooling_heatpump": {
+      "variable": "feat_cooling_heatpump",
+      "label": "heat pump cooling",
+      "coefficient": 0.0614,
+      "std_error": 0.0076,
+      "pct_effect": 6.3336,
+      "p_value": 9.5616e-16,
+      "significant": true
+    },
+    "feat_water_frontage": {
+      "variable": "feat_water_frontage",
+      "label": "water frontage",
+      "coefficient": 0.1024,
+      "std_error": 0.0131,
+      "pct_effect": 10.7882,
+      "p_value": 5.1704e-15,
+      "significant": true
+    },
+    "feat_heat_radiant": {
+      "variable": "feat_heat_radiant",
+      "label": "radiant heat",
+      "coefficient": 0.0929,
+      "std_error": 0.012,
+      "pct_effect": 9.7306,
+      "p_value": 1.0143e-14,
+      "significant": true
+    },
+    "as.integer(is.na(rem_bucolic))": {
+      "variable": "as.integer(is.na(rem_bucolic))",
+      "label": "bucolic unknown flag",
+      "coefficient": -0.1564,
+      "std_error": 0.0226,
+      "pct_effect": -14.4746,
+      "p_value": 5.094e-12,
+      "significant": true
+    },
+    "feat_recwater_dock": {
+      "variable": "feat_recwater_dock",
+      "label": "dock",
+      "coefficient": 0.1046,
+      "std_error": 0.0165,
+      "pct_effect": 11.0213,
+      "p_value": 2.3562e-10,
+      "significant": true
+    },
+    "feat_view_mountain": {
+      "variable": "feat_view_mountain",
+      "label": "mountain view",
+      "coefficient": 0.0905,
+      "std_error": 0.0146,
+      "pct_effect": 9.4709,
+      "p_value": 5.934e-10,
+      "significant": true
+    },
+    "feat_road_dirt": {
+      "variable": "feat_road_dirt",
+      "label": "dirt/gravel road",
+      "coefficient": 0.0601,
+      "std_error": 0.01,
+      "pct_effect": 6.1899,
+      "p_value": 1.8791e-09,
+      "significant": true
+    },
+    "feat_generator": {
+      "variable": "feat_generator",
+      "label": "generator",
+      "coefficient": 0.0568,
+      "std_error": 0.0096,
+      "pct_effect": 5.8408,
+      "p_value": 2.869e-09,
+      "significant": true
+    },
+    "owner_occ_rate": {
+      "variable": "owner_occ_rate",
+      "label": "tract owner-occupancy rate",
+      "coefficient": -0.2029,
+      "std_error": 0.0349,
+      "pct_effect": -18.363,
+      "p_value": 6.4627e-09,
+      "significant": true
+    },
+    "feat_cooling_central": {
+      "variable": "feat_cooling_central",
+      "label": "central air",
+      "coefficient": 0.0848,
+      "std_error": 0.0148,
+      "pct_effect": 8.845,
+      "p_value": 1.0173e-08,
+      "significant": true
+    },
+    "X..Bedrooms": {
+      "variable": "X..Bedrooms",
+      "label": "bedrooms",
+      "coefficient": 0.0347,
+      "std_error": 0.0061,
+      "pct_effect": 3.5334,
+      "p_value": 1.4475e-08,
+      "significant": true
+    },
+    "rem_lifestyle_starter": {
+      "variable": "rem_lifestyle_starter",
+      "label": "starter home tier",
+      "coefficient": -0.0731,
+      "std_error": 0.0129,
+      "pct_effect": -7.0505,
+      "p_value": 1.4957e-08,
+      "significant": true
+    },
+    "feat_recwater_oceanfront": {
+      "variable": "feat_recwater_oceanfront",
+      "label": "oceanfront",
+      "coefficient": 0.0858,
+      "std_error": 0.0152,
+      "pct_effect": 8.9569,
+      "p_value": 1.5765e-08,
+      "significant": true
+    },
+    "feat_recwater_row": {
+      "variable": "feat_recwater_row",
+      "label": "right-of-way to water",
+      "coefficient": -0.1177,
+      "std_error": 0.021,
+      "pct_effect": -11.1023,
+      "p_value": 2.0337e-08,
+      "significant": true
+    },
+    "rem_privacy_low": {
+      "variable": "rem_privacy_low",
+      "label": "low privacy (in-town, open lot)",
+      "coefficient": -0.074,
+      "std_error": 0.0133,
+      "pct_effect": -7.1347,
+      "p_value": 2.7988e-08,
+      "significant": true
+    },
+    "feat_new_construction": {
+      "variable": "feat_new_construction",
+      "label": "new construction",
+      "coefficient": 0.0833,
+      "std_error": 0.015,
+      "pct_effect": 8.6866,
+      "p_value": 3.0318e-08,
+      "significant": true
+    },
+    "feat_floors_vinyl": {
+      "variable": "feat_floors_vinyl",
+      "label": "vinyl floors",
+      "coefficient": -0.0352,
+      "std_error": 0.0064,
+      "pct_effect": -3.4609,
+      "p_value": 4.0132e-08,
+      "significant": true
+    },
+    "feat_basement_dirt": {
+      "variable": "feat_basement_dirt",
+      "label": "dirt floor basement",
+      "coefficient": -0.0805,
+      "std_error": 0.0148,
+      "pct_effect": -7.7301,
+      "p_value": 5.1663e-08,
+      "significant": true
+    },
+    "feat_recwater_nearby": {
+      "variable": "feat_recwater_nearby",
+      "label": "nearby water",
+      "coefficient": -0.0376,
+      "std_error": 0.0071,
+      "pct_effect": -3.6862,
+      "p_value": 1.4071e-07,
+      "significant": true
+    },
+    "feat_view_scenic": {
+      "variable": "feat_view_scenic",
+      "label": "scenic view",
+      "coefficient": 0.0438,
+      "std_error": 0.0085,
+      "pct_effect": 4.4793,
+      "p_value": 2.5064e-07,
+      "significant": true
+    },
+    "rem_lifestyle_upscale": {
+      "variable": "rem_lifestyle_upscale",
+      "label": "upscale lifestyle tier",
+      "coefficient": 0.0469,
+      "std_error": 0.0096,
+      "pct_effect": 4.8033,
+      "p_value": 1.0055e-06,
+      "significant": true
+    },
+    "as.integer(is.na(rem_kitchen_quality))": {
+      "variable": "as.integer(is.na(rem_kitchen_quality))",
+      "label": "kitchen quality unknown flag",
+      "coefficient": -0.0404,
+      "std_error": 0.0084,
+      "pct_effect": -3.9638,
+      "p_value": 1.7167e-06,
+      "significant": true
+    },
+    "feat_deck": {
+      "variable": "feat_deck",
+      "label": "deck",
+      "coefficient": 0.0283,
+      "std_error": 0.0063,
+      "pct_effect": 2.8707,
+      "p_value": 7.8938e-06,
+      "significant": true
+    },
+    "feat_ext_log": {
+      "variable": "feat_ext_log",
+      "label": "log exterior",
+      "coefficient": 0.0863,
+      "std_error": 0.0196,
+      "pct_effect": 9.0123,
+      "p_value": 0,
+      "significant": true
+    },
+    "feat_floors_carpet": {
+      "variable": "feat_floors_carpet",
+      "label": "carpet floors",
+      "coefficient": -0.0271,
+      "std_error": 0.0063,
+      "pct_effect": -2.6721,
+      "p_value": 0,
+      "significant": true
+    },
+    "rem_estate_sale": {
+      "variable": "rem_estate_sale",
+      "label": "estate or trust sale",
+      "coefficient": -0.1724,
+      "std_error": 0.0407,
+      "pct_effect": -15.834,
+      "p_value": 0,
+      "significant": true
+    },
+    "feat_style_cape": {
+      "variable": "feat_style_cape",
+      "label": "Cape Cod style",
+      "coefficient": -0.0313,
+      "std_error": 0.0081,
+      "pct_effect": -3.0843,
+      "p_value": 0.0001,
+      "significant": true
+    },
+    "log(pop_density + 1)": {
+      "variable": "log(pop_density + 1)",
+      "label": "log population density",
+      "coefficient": -0.0161,
+      "std_error": 0.0044,
+      "pct_effect": -1.6009,
+      "p_value": 0.0002,
+      "significant": true
+    },
+    "rem_lifestyle_camp": {
+      "variable": "rem_lifestyle_camp",
+      "label": "camp/seasonal tier",
+      "coefficient": -0.0632,
+      "std_error": 0.0174,
+      "pct_effect": -6.12,
+      "p_value": 0.0003,
+      "significant": true
+    },
+    "feat_roof_metal": {
+      "variable": "feat_roof_metal",
+      "label": "metal roof",
+      "coefficient": -0.0268,
+      "std_error": 0.0079,
+      "pct_effect": -2.6469,
+      "p_value": 0.0007,
+      "significant": true
+    },
+    "feat_driveway_paved": {
+      "variable": "feat_driveway_paved",
+      "label": "paved driveway",
+      "coefficient": 0.0245,
+      "std_error": 0.0073,
+      "pct_effect": 2.4816,
+      "p_value": 0.0009,
+      "significant": true
+    },
+    "feat_floors_linoleum": {
+      "variable": "feat_floors_linoleum",
+      "label": "linoleum floors",
+      "coefficient": -0.0399,
+      "std_error": 0.0122,
+      "pct_effect": -3.9087,
+      "p_value": 0.0011,
+      "significant": true
+    },
+    "feat_heat_hotwater": {
+      "variable": "feat_heat_hotwater",
+      "label": "hot water / radiator heat",
+      "coefficient": 0.0234,
+      "std_error": 0.0073,
+      "pct_effect": 2.365,
+      "p_value": 0.0014,
+      "significant": true
+    },
+    "Total.Baths:X..Bedrooms": {
+      "variable": "Total.Baths:X..Bedrooms",
+      "label": "Total.Baths:X..Bedrooms",
+      "coefficient": -0.005,
+      "std_error": 0.0016,
+      "pct_effect": -0.496,
+      "p_value": 0.0021,
+      "significant": true
+    },
+    "rem_new_heating": {
+      "variable": "rem_new_heating",
+      "label": "new heating system mentioned",
+      "coefficient": -0.0226,
+      "std_error": 0.0076,
+      "pct_effect": -2.2363,
+      "p_value": 0.003,
+      "significant": true
+    },
+    "rem_views": {
+      "variable": "rem_views",
+      "label": "views described",
+      "coefficient": 0.0217,
+      "std_error": 0.0078,
+      "pct_effect": 2.1985,
+      "p_value": 0.0056,
+      "significant": true
+    },
+    "feat_floors_laminate": {
+      "variable": "feat_floors_laminate",
+      "label": "laminate floors",
+      "coefficient": -0.0193,
+      "std_error": 0.007,
+      "pct_effect": -1.9137,
+      "p_value": 0.0059,
+      "significant": true
+    },
+    "coalesce(feat_basement_quality, 3)": {
+      "variable": "coalesce(feat_basement_quality, 3)",
+      "label": "coalesce(feat_basement_quality, 3)",
+      "coefficient": -0.0066,
+      "std_error": 0.0026,
+      "pct_effect": -0.6574,
+      "p_value": 0.0112,
+      "significant": true
+    },
+    "log(Lot.Size.Acres.... + 0.05):log(pop_density + 1)": {
+      "variable": "log(Lot.Size.Acres.... + 0.05):log(pop_density + 1)",
+      "label": "log(Lot.Size.Acres.... + 0.05):log(pop_density + 1)",
+      "coefficient": -0.003,
+      "std_error": 0.0012,
+      "pct_effect": -0.3044,
+      "p_value": 0.0117,
+      "significant": true
+    },
+    "feat_fuel_gas_natural": {
+      "variable": "feat_fuel_gas_natural",
+      "label": "natural gas",
+      "coefficient": 0.0341,
+      "std_error": 0.0136,
+      "pct_effect": 3.4654,
+      "p_value": 0.0125,
+      "significant": true
+    },
+    "log(dist_grocery_miles + 0.5)": {
+      "variable": "log(dist_grocery_miles + 0.5)",
+      "label": "log distance to grocery store",
+      "coefficient": -0.011,
+      "std_error": 0.0048,
+      "pct_effect": -1.0931,
+      "p_value": 0.0221,
+      "significant": true
+    },
+    "feat_kitchen_granite": {
+      "variable": "feat_kitchen_granite",
+      "label": "granite countertops",
+      "coefficient": 0.0196,
+      "std_error": 0.0087,
+      "pct_effect": 1.9778,
+      "p_value": 0.0239,
+      "significant": true
+    },
+    "rem_lifestyle_retire": {
+      "variable": "rem_lifestyle_retire",
+      "label": "retirement lifestyle tier",
+      "coefficient": -0.032,
+      "std_error": 0.0145,
+      "pct_effect": -3.148,
+      "p_value": 0.0269,
+      "significant": true
+    },
+    "rem_water_issues": {
+      "variable": "rem_water_issues",
+      "label": "water/moisture issues mentioned",
+      "coefficient": -0.1198,
+      "std_error": 0.0541,
+      "pct_effect": -11.2877,
+      "p_value": 0.027,
+      "significant": true
+    },
+    "feat_water_view_seasonal": {
+      "variable": "feat_water_view_seasonal",
+      "label": "seasonal water view",
+      "coefficient": -0.0461,
+      "std_error": 0.0211,
+      "pct_effect": -4.502,
+      "p_value": 0.0288,
+      "significant": true
+    },
+    "feat_porch_screened": {
+      "variable": "feat_porch_screened",
+      "label": "screened porch",
+      "coefficient": 0.0262,
+      "std_error": 0.0122,
+      "pct_effect": 2.6591,
+      "p_value": 0.0309,
+      "significant": true
+    },
+    "feat_style_colonial": {
+      "variable": "feat_style_colonial",
+      "label": "Colonial style",
+      "coefficient": -0.0227,
+      "std_error": 0.0105,
+      "pct_effect": -2.2487,
+      "p_value": 0.0309,
+      "significant": true
+    },
+    "feat_double_pane": {
+      "variable": "feat_double_pane",
+      "label": "double-pane windows",
+      "coefficient": 0.0168,
+      "std_error": 0.0079,
+      "pct_effect": 1.6966,
+      "p_value": 0.0326,
+      "significant": true
+    },
+    "feat_roof_flat": {
+      "variable": "feat_roof_flat",
+      "label": "flat roof",
+      "coefficient": 0.0612,
+      "std_error": 0.0303,
+      "pct_effect": 6.3099,
+      "p_value": 0.0437,
+      "significant": true
+    },
+    "feat_pool_inground": {
+      "variable": "feat_pool_inground",
+      "label": "in-ground pool",
+      "coefficient": -0.0336,
+      "std_error": 0.0169,
+      "pct_effect": -3.3067,
+      "p_value": 0.0473,
+      "significant": true
+    },
+    "feat_inlaw_apt": {
+      "variable": "feat_inlaw_apt",
+      "label": "in-law apartment",
+      "coefficient": -0.0342,
+      "std_error": 0.0179,
+      "pct_effect": -3.3635,
+      "p_value": 0.0567,
+      "significant": true
+    },
+    "rem_foundation_pos": {
+      "variable": "rem_foundation_pos",
+      "label": "positive foundation signal",
+      "coefficient": 0.024,
+      "std_error": 0.0129,
+      "pct_effect": 2.4319,
+      "p_value": 0.0616,
+      "significant": true
+    },
+    "feat_ext_asbestos": {
+      "variable": "feat_ext_asbestos",
+      "label": "asbestos siding",
+      "coefficient": -0.0573,
+      "std_error": 0.0323,
+      "pct_effect": -5.5642,
+      "p_value": 0.0768,
+      "significant": true
+    },
+    "rem_historic": {
+      "variable": "rem_historic",
+      "label": "historical character mentioned",
+      "coefficient": 0.0153,
+      "std_error": 0.0088,
+      "pct_effect": 1.5404,
+      "p_value": 0.0819,
+      "significant": true
+    },
+    "feat_basement_sumppump": {
+      "variable": "feat_basement_sumppump",
+      "label": "sump pump",
+      "coefficient": 0.0181,
+      "std_error": 0.0107,
+      "pct_effect": 1.8275,
+      "p_value": 0.0896,
+      "significant": true
+    },
+    "feat_site_wooded": {
+      "variable": "feat_site_wooded",
+      "label": "wooded site",
+      "coefficient": 0.0122,
+      "std_error": 0.0072,
+      "pct_effect": 1.2314,
+      "p_value": 0.0897,
+      "significant": true
+    },
+    "rem_new_roof": {
+      "variable": "rem_new_roof",
+      "label": "new roof mentioned",
+      "coefficient": -0.0159,
+      "std_error": 0.0096,
+      "pct_effect": -1.5785,
+      "p_value": 0.0986,
+      "significant": true
+    },
+    "feat_style_raised_ranch": {
+      "variable": "feat_style_raised_ranch",
+      "label": "Raised Ranch style",
+      "coefficient": 0.0257,
+      "std_error": 0.0161,
+      "pct_effect": 2.6061,
+      "p_value": 0.111,
+      "significant": true
+    },
+    "feat_heat_forcedair": {
+      "variable": "feat_heat_forcedair",
+      "label": "forced air heat",
+      "coefficient": -0.013,
+      "std_error": 0.0084,
+      "pct_effect": -1.2939,
+      "p_value": 0.123,
+      "significant": true
+    },
+    "feat_fuel_pellets": {
+      "variable": "feat_fuel_pellets",
+      "label": "pellet fuel",
+      "coefficient": 0.0177,
+      "std_error": 0.0123,
+      "pct_effect": 1.784,
+      "p_value": 0.1512,
+      "significant": true
+    },
+    "coalesce(rem_bucolic, 2)": {
+      "variable": "coalesce(rem_bucolic, 2)",
+      "label": "coalesce(rem_bucolic, 2)",
+      "coefficient": 0.0098,
+      "std_error": 0.007,
+      "pct_effect": 0.9848,
+      "p_value": 0.1595,
+      "significant": true
+    },
+    "feat_ext_brick": {
+      "variable": "feat_ext_brick",
+      "label": "brick exterior",
+      "coefficient": 0.0292,
+      "std_error": 0.0218,
+      "pct_effect": 2.9633,
+      "p_value": 0.181,
+      "significant": true
+    },
+    "feat_loc_intown": {
+      "variable": "feat_loc_intown",
+      "label": "in-town location",
+      "coefficient": -0.0128,
+      "std_error": 0.0096,
+      "pct_effect": -1.2682,
+      "p_value": 0.1837,
+      "significant": true
+    },
+    "feat_style_farmhouse": {
+      "variable": "feat_style_farmhouse",
+      "label": "Farmhouse style",
+      "coefficient": -0.0193,
+      "std_error": 0.0146,
+      "pct_effect": -1.9106,
+      "p_value": 0.1864,
+      "significant": true
+    },
+    "rem_foundation_neg": {
+      "variable": "rem_foundation_neg",
+      "label": "negative foundation signal",
+      "coefficient": 0.0766,
+      "std_error": 0.0596,
+      "pct_effect": 7.9611,
+      "p_value": 0.1988,
+      "significant": true
+    },
+    "feat_barn": {
+      "variable": "feat_barn",
+      "label": "barn",
+      "coefficient": 0.0186,
+      "std_error": 0.0146,
+      "pct_effect": 1.8725,
+      "p_value": 0.2041,
+      "significant": true
+    },
+    "feat_kitchen_quartz": {
+      "variable": "feat_kitchen_quartz",
+      "label": "quartz countertops",
+      "coefficient": 0.0168,
+      "std_error": 0.0133,
+      "pct_effect": 1.697,
+      "p_value": 0.2056,
+      "significant": true
+    },
+    "feat_site_culdesac": {
+      "variable": "feat_site_culdesac",
+      "label": "cul-de-sac lot",
+      "coefficient": 0.0146,
+      "std_error": 0.0139,
+      "pct_effect": 1.4736,
+      "p_value": 0.2923,
+      "significant": false
+    },
+    "feat_water_public": {
+      "variable": "feat_water_public",
+      "label": "public water",
+      "coefficient": -0.0108,
+      "std_error": 0.0105,
+      "pct_effect": -1.0702,
+      "p_value": 0.3035,
+      "significant": false
+    },
+    "as.integer(is.na(rem_flooring_quality))": {
+      "variable": "as.integer(is.na(rem_flooring_quality))",
+      "label": "flooring quality unknown flag",
+      "coefficient": 0.0118,
+      "std_error": 0.0118,
+      "pct_effect": 1.1857,
+      "p_value": 0.3176,
+      "significant": false
+    },
+    "rem_investor": {
+      "variable": "rem_investor",
+      "label": "investor language",
+      "coefficient": 0.0074,
+      "std_error": 0.0076,
+      "pct_effect": 0.7444,
+      "p_value": 0.3322,
+      "significant": false
+    },
+    "feat_laundry_1st": {
+      "variable": "feat_laundry_1st",
+      "label": "first-floor laundry",
+      "coefficient": 0.006,
+      "std_error": 0.0063,
+      "pct_effect": 0.6024,
+      "p_value": 0.343,
+      "significant": false
+    },
+    "rem_new_basement": {
+      "variable": "rem_new_basement",
+      "label": "basement waterproofing mentioned",
+      "coefficient": -0.0125,
+      "std_error": 0.0162,
+      "pct_effect": -1.2402,
+      "p_value": 0.4415,
+      "significant": false
+    },
+    "feat_style_contemporary": {
+      "variable": "feat_style_contemporary",
+      "label": "Contemporary style",
+      "coefficient": -0.0079,
+      "std_error": 0.011,
+      "pct_effect": -0.7845,
+      "p_value": 0.4754,
+      "significant": false
+    },
+    "coalesce(rem_bath_quality, 1)": {
+      "variable": "coalesce(rem_bath_quality, 1)",
+      "label": "coalesce(rem_bath_quality, 1)",
+      "coefficient": -0.0057,
+      "std_error": 0.0086,
+      "pct_effect": -0.5675,
+      "p_value": 0.5072,
+      "significant": false
+    },
+    "feat_sewer_public": {
+      "variable": "feat_sewer_public",
+      "label": "public sewer",
+      "coefficient": 0.0064,
+      "std_error": 0.0111,
+      "pct_effect": 0.641,
+      "p_value": 0.5666,
+      "significant": false
+    },
+    "coalesce(rem_flooring_quality, 1)": {
+      "variable": "coalesce(rem_flooring_quality, 1)",
+      "label": "coalesce(rem_flooring_quality, 1)",
+      "coefficient": 0.004,
+      "std_error": 0.0072,
+      "pct_effect": 0.3995,
+      "p_value": 0.5788,
+      "significant": false
+    },
+    "rem_new_windows": {
+      "variable": "rem_new_windows",
+      "label": "new windows mentioned",
+      "coefficient": 0.0054,
+      "std_error": 0.0105,
+      "pct_effect": 0.5385,
+      "p_value": 0.6088,
+      "significant": false
+    },
+    "feat_style_camp": {
+      "variable": "feat_style_camp",
+      "label": "Camp style",
+      "coefficient": 0.01,
+      "std_error": 0.02,
+      "pct_effect": 1.0059,
+      "p_value": 0.6165,
+      "significant": false
+    },
+    "feat_recwater_deeded": {
+      "variable": "feat_recwater_deeded",
+      "label": "deeded water access",
+      "coefficient": 0.0069,
+      "std_error": 0.0153,
+      "pct_effect": 0.6959,
+      "p_value": 0.6503,
+      "significant": false
+    },
+    "as.integer(is.na(rem_bath_quality))": {
+      "variable": "as.integer(is.na(rem_bath_quality))",
+      "label": "bath quality unknown flag",
+      "coefficient": 0.0039,
+      "std_error": 0.0101,
+      "pct_effect": 0.3904,
+      "p_value": 0.699,
+      "significant": false
+    },
+    "feat_ext_wood": {
+      "variable": "feat_ext_wood",
+      "label": "wood exterior",
+      "coefficient": -0.0025,
+      "std_error": 0.0069,
+      "pct_effect": -0.2503,
+      "p_value": 0.7156,
+      "significant": false
+    },
+    "feat_road_private": {
+      "variable": "feat_road_private",
+      "label": "private road",
+      "coefficient": -0.0033,
+      "std_error": 0.0094,
+      "pct_effect": -0.332,
+      "p_value": 0.7224,
+      "significant": false
+    },
+    "coalesce(rem_kitchen_quality, 1)": {
+      "variable": "coalesce(rem_kitchen_quality, 1)",
+      "label": "coalesce(rem_kitchen_quality, 1)",
+      "coefficient": -0.0016,
+      "std_error": 0.0063,
+      "pct_effect": -0.1564,
+      "p_value": 0.804,
+      "significant": false
+    },
+    "Year.Built": {
+      "variable": "Year.Built",
+      "label": "year built",
+      "coefficient": 1.3009e-06,
+      "std_error": 5.5985e-06,
+      "pct_effect": 0.0001,
+      "p_value": 0.8163,
+      "significant": false
+    },
+    "feat_ext_fibcement": {
+      "variable": "feat_ext_fibcement",
+      "label": "fiber cement siding",
+      "coefficient": 0.0046,
+      "std_error": 0.024,
+      "pct_effect": 0.4652,
+      "p_value": 0.8466,
+      "significant": false
+    },
+    "feat_heat_woodstove": {
+      "variable": "feat_heat_woodstove",
+      "label": "wood stove",
+      "coefficient": 0.0017,
+      "std_error": 0.0089,
+      "pct_effect": 0.1657,
+      "p_value": 0.8528,
+      "significant": false
+    },
+    "feat_road_seasonal": {
+      "variable": "feat_road_seasonal",
+      "label": "seasonal road",
+      "coefficient": 0.0045,
+      "std_error": 0.033,
+      "pct_effect": 0.4551,
+      "p_value": 0.8904,
+      "significant": false
+    },
+    "as.integer(is.na(rem_condition))": {
+      "variable": "as.integer(is.na(rem_condition))",
+      "label": "condition tier unknown flag",
+      "coefficient": -0.0015,
+      "std_error": 0.0113,
+      "pct_effect": -0.1507,
+      "p_value": 0.8941,
+      "significant": false
+    },
+    "feat_radon_air": {
+      "variable": "feat_radon_air",
+      "label": "radon mitigation system",
+      "coefficient": -0.0014,
+      "std_error": 0.0122,
+      "pct_effect": -0.1423,
+      "p_value": 0.9074,
+      "significant": false
+    },
+    "feat_cooling_window": {
+      "variable": "feat_cooling_window",
+      "label": "window AC",
+      "coefficient": -0.0017,
+      "std_error": 0.015,
+      "pct_effect": -0.1699,
+      "p_value": 0.9097,
+      "significant": false
+    },
+    "feat_solar": {
+      "variable": "feat_solar",
+      "label": "solar panels",
+      "coefficient": 0.0036,
+      "std_error": 0.0319,
+      "pct_effect": 0.3603,
+      "p_value": 0.9102,
+      "significant": false
+    },
+    "rem_privacy_high": {
+      "variable": "rem_privacy_high",
+      "label": "high privacy signal",
+      "coefficient": 0.0008,
+      "std_error": 0.0087,
+      "pct_effect": 0.0764,
+      "p_value": 0.9304,
+      "significant": false
+    },
+    "feat_primary_bath": {
+      "variable": "feat_primary_bath",
+      "label": "primary bedroom with bath",
+      "coefficient": 0.0007,
+      "std_error": 0.0086,
+      "pct_effect": 0.0673,
+      "p_value": 0.9373,
+      "significant": false
+    },
+    "feat_loc_beach": {
+      "variable": "feat_loc_beach",
+      "label": "near public beach",
+      "coefficient": 0.0006,
+      "std_error": 0.0083,
+      "pct_effect": 0.0617,
+      "p_value": 0.9411,
+      "significant": false
+    },
+    "feat_found_stone": {
+      "variable": "feat_found_stone",
+      "label": "stone foundation",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_found_block": {
+      "variable": "feat_found_block",
+      "label": "block foundation",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_found_pier": {
+      "variable": "feat_found_pier",
+      "label": "pier foundation",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_found_slab": {
+      "variable": "feat_found_slab",
+      "label": "slab foundation",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_kitchen_island": {
+      "variable": "feat_kitchen_island",
+      "label": "kitchen island",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_kitchen_eatin": {
+      "variable": "feat_kitchen_eatin",
+      "label": "eat-in kitchen",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_garage_attached": {
+      "variable": "feat_garage_attached",
+      "label": "attached garage",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_garage_directentry": {
+      "variable": "feat_garage_directentry",
+      "label": "garage with direct entry",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    },
+    "feat_garage_heated": {
+      "variable": "feat_garage_heated",
+      "label": "heated garage",
+      "coefficient": "NA",
+      "std_error": "NA",
+      "pct_effect": "NA",
+      "p_value": "NA",
+      "significant": null
+    }
+  }
+}
