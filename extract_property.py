@@ -291,11 +291,9 @@ def _llm_candidate(
     content.extend(
         anthropic_content(disclosure_document)
     )
-
     response = client.messages.create(
         model=model,
         max_tokens=12000,
-        temperature=0,
         system=PROMPT_PATH.read_text(
             encoding="utf-8"
         ),
@@ -482,7 +480,6 @@ def _llm_remarks_candidate(
     response = client.messages.create(
         model=model,
         max_tokens=5000,
-        temperature=0,
         system=REMARKS_SYSTEM_PROMPT,
         messages=[
             {
