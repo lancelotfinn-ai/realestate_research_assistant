@@ -1,59 +1,43 @@
 # ============================================================
 # r_worker.R
 #
-# Persistent R valuation worker.
+# Persistent newline-delimited JSON worker for valuation.R.
 #
-# This process:
+# The worker loads the fitted model and geographic artifacts once, then
+# accepts one request per line on stdin and writes one response per line on
+# stdout. Ordinary diagnostics must go to stderr because stdout is reserved
+# for the JSON protocol used by main.py.
 #
-#   1. Loads valuation.R once.
-#   2. Loads the fitted model and geographic artifacts once.
-#   3. Reads one JSON request per line from standard input.
-#   4. Runs value_property().
-#   5. Writes one JSON response per line to standard output.
+# Supported request forms
+# -----------------------
 #
-# Keeping this process alive avoids reloading the R model,
-# coastline, grocery-store data, and ACS data for every request.
-#
-# Input protocol:
+# 1. Full extracted property record (preferred):
 #
 # {
 #   "id": 1,
-#   "address": "16 Modin Lane, Penobscot, ME 04476",
+#   "property_record": { "schema_version": "property-v1", ... },
+#   "asof": "2026-07-22"
+# }
+#
+# 2. Legacy flat model inputs (retained for /estimate_home_value):
+#
+# {
+#   "id": 2,
+#   "address": "49 Bagaduce Lane, Penobscot, ME",
 #   "geo_override": {
-#     "lat": 44.416855,
-#     "lon": -68.728069,
-#     "tract_fips": null
+#     "lat": 44.4056,
+#     "lon": -68.699,
+#     "tract_fips": "23009966400"
 #   },
 #   "user_input": {
 #     "SqFt.Finished.Total": 2199,
 #     "Total.Baths": 4
-#   }
+#   },
+#   "asof": "2026-07-22"
 # }
 #
-# geo_override is optional.
-#
-# If valid coordinates are supplied, valuation.R uses them and
-# does not attempt Census street-address geocoding.
-#
-# If coordinates are supplied without tract_fips, valuation.R
-# asks Census only which tract contains those coordinates.
-#
-# Output protocol:
-#
-# {
-#   "id": 1,
-#   "ok": true,
-#   "estimate": 1000000,
-#   ...
-# }
-#
-# A malformed request or valuation error returns an error response
-# without terminating the worker.
-# ============================================================
-
-
-# ============================================================
-# DEPENDENCIES
+# property_record, user_input, address, geo_override, and asof are optional at
+# the transport layer. valuation.R performs the substantive validation.
 # ============================================================
 
 suppressMessages(
@@ -65,25 +49,65 @@ suppressMessages(
 # LOAD THE VALUATION ENGINE ONCE
 # ============================================================
 
-# Sourcing valuation.R also:
-#
-#   - sources geo_features.R,
-#   - loads the fitted model,
-#   - loads feature defaults,
-#   - loads time and season coefficients,
-#   - loads the impact ranking,
-#   - loads all geographic artifacts, and
-#   - defines value_property() and %||%.
-#
-# Nothing from valuation.R should write ordinary output to stdout
-# while it is being sourced, because stdout is reserved for the
-# newline-delimited JSON protocol.
+app_dir <- Sys.getenv("APP_DIR", ".")
+valuation_path <- file.path(app_dir, "valuation.R")
 
-source("valuation.R")
+if (!file.exists(valuation_path)) {
+  stop("Could not find valuation.R at: ", valuation_path)
+}
+
+# Sourcing valuation.R loads the model, defaults, time/season coefficients,
+# impact ranking, coefficient metadata, and geographic artifacts once.
+source(valuation_path)
 
 
 # ============================================================
-# OPEN STANDARD INPUT
+# JSON PROTOCOL HELPERS
+# ============================================================
+
+write_response <- function(response) {
+  encoded <- toJSON(
+    response,
+    auto_unbox = TRUE,
+    null = "null",
+    na = "null",
+    dataframe = "rows",
+    digits = NA
+  )
+
+  cat(encoded, "\n", sep = "")
+  flush(stdout())
+}
+
+
+error_response <- function(id = NULL, reason, error_type = NULL) {
+  list(
+    id = id,
+    ok = FALSE,
+    reason = reason,
+    error_type = error_type
+  )
+}
+
+
+parse_request <- function(line) {
+  tryCatch(
+    fromJSON(
+      line,
+      simplifyVector = FALSE
+    ),
+    error = function(e) {
+      structure(
+        list(message = conditionMessage(e)),
+        class = "worker_parse_error"
+      )
+    }
+  )
+}
+
+
+# ============================================================
+# OPEN STDIN AND SIGNAL READINESS
 # ============================================================
 
 input_connection <- file(
@@ -92,16 +116,8 @@ input_connection <- file(
   blocking = TRUE
 )
 
-
-# ============================================================
-# SIGNAL READINESS TO PYTHON
-# ============================================================
-
-cat(
-  '{"ready":true}\n'
-)
-
-flush(stdout())
+# main.py waits for this message before sending its first valuation request.
+write_response(list(ready = TRUE))
 
 
 # ============================================================
@@ -115,121 +131,77 @@ repeat {
     warn = FALSE
   )
 
-  # An empty result means the parent process closed stdin.
-
-  if (length(request_line) == 0) {
-    break
-  }
+  # EOF means the Python parent closed the worker's stdin.
+  if (length(request_line) == 0) break
 
   request_line <- trimws(request_line)
+  if (!nzchar(request_line)) next
 
-  # Ignore blank lines without terminating the worker.
-
-  if (!nzchar(request_line)) {
-    next
-  }
-
-  # ----------------------------------------------------------
-  # Parse the request
-  # ----------------------------------------------------------
-
-  request <- tryCatch(
-    fromJSON(
-      request_line,
-      simplifyVector = FALSE
-    ),
-    error = function(e) {
-      structure(
-        list(
-          parse_error = conditionMessage(e)
-        ),
-        class = "worker_parse_error"
-      )
-    }
-  )
-
-  # ----------------------------------------------------------
-  # Handle malformed JSON
-  # ----------------------------------------------------------
+  request <- parse_request(request_line)
 
   if (inherits(request, "worker_parse_error")) {
-    response <- list(
-      id = NULL,
-      ok = FALSE,
-      reason = paste0(
-        "invalid_json: ",
-        request$parse_error
+    write_response(
+      error_response(
+        id = NULL,
+        reason = paste0("invalid_json: ", request$message),
+        error_type = "parse_error"
       )
     )
-
-    cat(
-      toJSON(
-        response,
-        auto_unbox = TRUE,
-        null = "null"
-      ),
-      "\n",
-      sep = ""
-    )
-
-    flush(stdout())
-
     next
   }
 
-  # Preserve the request ID so Python can associate the response
-  # with the correct request.
+  if (!is.list(request)) {
+    write_response(
+      error_response(
+        id = NULL,
+        reason = "invalid_request: top-level JSON value must be an object",
+        error_type = "validation_error"
+      )
+    )
+    next
+  }
 
   request_id <- request$id %||% NULL
-
-  # ----------------------------------------------------------
-  # Run the valuation
-  # ----------------------------------------------------------
 
   response <- tryCatch(
     {
       result <- value_property(
-        user_input =
-          request$user_input %||% list(),
-
-        address =
-          request$address %||% NULL,
-
-        geo_override =
-          request$geo_override %||% NULL
+        user_input = request$user_input %||% list(),
+        address = request$address %||% NULL,
+        geo_override = request$geo_override %||% NULL,
+        asof = request$asof %||% Sys.Date(),
+        property_record = request$property_record %||% NULL
       )
 
-      result$id <- request_id
+      if (!is.list(result)) {
+        stop("value_property() did not return a list")
+      }
 
+      # Put the transport ID on the result so main.py can associate the
+      # response with the request that produced it.
+      result$id <- request_id
       result
     },
     error = function(e) {
-      list(
+      # Do not return document text, credentials, stack traces, or local paths.
+      # The error class and condition message are sufficient for service logs
+      # and client-side diagnosis of model/input incompatibilities.
+      message(
+        "[rworker] valuation failed: ",
+        class(e)[[1]],
+        ": ",
+        conditionMessage(e)
+      )
+
+      error_response(
         id = request_id,
-        ok = FALSE,
-        reason = paste0(
-          "worker_error: ",
-          conditionMessage(e)
-        )
+        reason = paste0("worker_error: ", conditionMessage(e)),
+        error_type = class(e)[[1]]
       )
     }
   )
 
-  # ----------------------------------------------------------
-  # Return one JSON object on one line
-  # ----------------------------------------------------------
-
-  cat(
-    toJSON(
-      response,
-      auto_unbox = TRUE,
-      null = "null"
-    ),
-    "\n",
-    sep = ""
-  )
-
-  flush(stdout())
+  write_response(response)
 }
 
 
