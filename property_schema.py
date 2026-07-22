@@ -527,8 +527,6 @@ class DisclosureFacts(StrictModel):
     septic_last_pumped_date: Fact[date] = Field(
         default_factory=Fact[date]
     )
-    septic_installation_year: Fact[int] = Field(default_factory=Fact[int])
-    septic_last_pumped_date: Fact[date] = Field(default_factory=Fact[date])
 
     active_roof_leak: Fact[bool] = Field(default_factory=Fact[bool])
     past_roof_leak: Fact[bool] = Field(default_factory=Fact[bool])
