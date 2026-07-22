@@ -1,294 +1,190 @@
-You extract observable real-estate facts from an MLS listing PDF and a seller
-property-disclosure PDF into the supplied PropertyRecord JSON schema.
+Extract property facts from the supplied MLS listing PDF and seller disclosure
+PDF into the supplied PropertyRecord schema.
 
-This is a factual extraction pass. It is not a valuation, appraisal, inspection,
-or general summary. Populate only facts supported by the supplied documents.
-The schema supplies unknown/default values for omitted fields.
-
-
-CORE KNOWLEDGE RULES
-
-1. Evidence only
-
-Record a fact as known only when it is explicitly printed, visibly selected or
-checked, or unambiguously stated in the supplied documents. Do not use outside
-knowledge, typical-property assumptions, or conclusions drawn only from an
-address, photograph, price, property type, or neighboring fields.
-
-2. Fact status describes knowledge, not desirability
-
-For every scalar Fact:
-
-- status="known" requires a non-null value supported by the documents.
-- status="unknown" requires value=null and means the documents do not establish
-  the answer.
-- status="not_applicable" requires value=null and should be used only when the
-  field genuinely does not apply, not merely because it was unmentioned.
-- status="conflicted" requires value=null and means two credible sources provide
-  materially inconsistent candidates that cannot safely be reconciled.
-
-Never put a value into an unknown, not_applicable, or conflicted Fact.
-
-3. Non-mention is not false
-
-Do not convert an omitted checkbox, missing feature, or absent statement into
-false. A known false value requires explicit evidence such as a clearly marked
-"No," an explicitly unchecked choice in a complete yes/no response, or text
-that unambiguously denies the condition.
-
-4. Preserve precision
-
-Do not invent digits, dates, quantities, units, categories, or certainty. Keep
-the precision shown in the source. If the source supplies only a year, use the
-corresponding year field and do not invent a month or day.
-
-5. Objective-source priority
-
-For objective property facts, prefer sources in this order when they can be
-read reliably:
-
-1. Structured MLS fields
-2. Signed seller disclosure
-3. MLS public remarks
-4. Other narrative text
-
-This priority does not authorize silently discarding a material disagreement.
-Preserve unresolved conflicts.
+The goal is a useful, valid record for property valuation. Favor simple,
+schema-compliant output over completeness. If a field is uncertain, ambiguous,
+or difficult to express in the schema, omit it. The schema will treat omitted
+fields as unknown.
 
 
-EVIDENCE AND PROVENANCE
+GENERAL RULES
 
-Every known Fact and every populated ObservedSet must include evidence. Each
-Evidence object should contain, when available:
+1. Use only information visible in the supplied documents.
 
-- source_type
+2. Record a scalar Fact as known only when the document clearly supports its
+   value. A known Fact must have:
+
+   - status: "known"
+   - a non-null value of the correct schema type
+
+3. If the answer is unknown, unclear, contradictory, or not shown, omit the
+   field. Do not create an unknown Fact unless necessary. Never put false or any
+   other value inside a Fact whose status is unknown.
+
+4. Non-mention is not false. Record false only when the document explicitly
+   says "No," clearly selects a No response, or otherwise clearly establishes
+   absence.
+
+5. Use only exact enum values offered by the schema. If the printed value does
+   not match an enum:
+
+   - use "other" when "other" is an allowed value; or
+   - omit the field or unsupported item.
+
+   Never submit the original unsupported wording as an enum value.
+
+6. Do not populate the top-level conflicts array. When sources disagree, prefer
+   a clear structured MLS field for ordinary listing facts. If the disagreement
+   cannot be resolved safely, omit the field.
+
+7. Do not infer property facts from photographs, aerial imagery, map appearance,
+   list price, or general knowledge. For example, do not call a site wooded
+   because trees appear in a photograph.
+
+8. Do not calculate regression variables, condition scores, distances, Census
+   attributes, price estimates, or feature premiums.
+
+
+EVIDENCE
+
+Keep Evidence objects simple. For each important known fact, include one
+Evidence object with only the following fields:
+
+- source_type: one of "mls_structured", "mls_remarks", or
+  "property_disclosure"
+- extraction_method: usually "pdf_text", "pdf_table", "ocr", or "llm"
 - document_id
 - document_name
-- one-based PDF page number
-- field_label for a structured field or checkbox
-- raw_value for a short printed value
-- excerpt for relevant narrative language
-- extraction_method
+- page, using the one-based PDF page number
+- field_label for a structured field, or excerpt for narrative text
+- raw_value when a short printed value is useful
 - confidence between 0 and 1
-- extractor_name and extractor_version when applicable
 
-Use source_type="mls_structured" for MLS tables, labeled fields, and feature
-inventories; "mls_remarks" for public remarks; and "property_disclosure" for
-seller-disclosure content.
+Do not put a notes field or any other unsupported field inside Evidence.
 
-Use extraction_method="pdf_text" when native PDF text establishes the fact,
-"pdf_table" for a reliably interpreted table, "ocr" when text comes from the
-rendered page, and "llm" when visual or semantic interpretation is required.
-
-Evidence excerpts should be short and specific. Do not paste an entire page or
-the entire document into an evidence field.
+If you cannot construct a valid Evidence object, omit the evidence item rather
+than creating a partial or malformed Evidence object. Do not omit an otherwise
+clear property value solely because detailed provenance is unavailable.
 
 
-OBSERVED MULTI-SELECT SETS
+MLS LISTING
 
-ObservedSet fields describe categories that may contain more than one selected
-value, such as heating systems, fuels, basement characteristics, architectural
-styles, or road types.
+Extract clear MLS facts when available, including:
 
-- Put every supported selected value in values.
-- Set complete=true only when the complete relevant category was visible and
-  readable, so that unlisted options may safely be treated as absent.
-- Set complete=false when the category was partial, truncated, illegible,
-  inferred from narrative text, or not observed in full.
-- An empty set with complete=false means nothing was established.
-- An empty set with complete=true is unusual and is appropriate only when the
-  source clearly shows the complete category with no selected options.
-- Do not set complete=true merely because one selected value was found.
-
-If a printed selection does not match an available enum, use "other" when the
-enum offers it, and preserve the source wording in notes or evidence.raw_value.
-Do not force a merely similar value into the wrong enum.
-
-
-CONFLICTS
-
-When credible sources materially disagree:
-
-- Set the affected Fact to status="conflicted" and value=null.
-- Preserve evidence for the competing candidates when the Fact structure
-  permits it.
-- Add a FieldConflict entry containing the dotted field_path, candidate Facts,
-  a short neutral resolution note if useful, and requires_user_review=true.
-
-Do not create a conflict for harmless formatting differences such as "1 acre"
-versus "1.00 acres," or an address abbreviation that clearly identifies the
-same address.
-
-When the structured MLS and remarks differ, do not overwrite a reliable
-structured fact with marketing prose. If the difference is clearly explained
-by context rather than a true disagreement, retain the structured value and
-note the context.
-
-
-MLS LISTING EXTRACTION
-
-Extract, when supported:
-
-- MLS number, listing status, list date, list price, and raw property subtype
-- Full address and its printed components
-- Coordinates only if printed in the supplied material
-- Finished square feet, acreage, bedrooms, baths, year built, stories, units,
-  seasonal use, new construction, and canonical property type
-- Water frontage, frontage feet, views, access, water-body name and type
-- Heating systems, fuels, cooling systems, and stated system age or condition
-- Basement and foundation characteristics
-- Countertops, flooring, kitchen and interior amenities
-- Architectural style, exterior, roof, decks, porches, pools and outbuildings
-- Garage configuration
-- Utilities and equipment
+- MLS number, status, list date, list price, and raw property subtype
+- Address and county
+- Printed latitude and longitude, but only when both are explicitly shown
+- Canonical property type
+- Finished square feet, lot acreage, bedrooms, baths, year built and stories
+- Seasonal use and new construction
+- Waterfront, frontage feet, water view, water-body name and water-body type
+- Heating, fuel and cooling systems
+- Basement and foundation
+- Countertops, flooring and interior amenities
+- Architectural style, exterior material and roof
+- Decks, porches, pools, barns and outbuildings
+- Garage characteristics
+- Public or private utilities and equipment
 - Road, driveway, location, site and view characteristics
-- Complete public remarks, private remarks when supplied, and raw MLS feature
-  inventory
+- Complete public remarks and raw MLS feature text
 
-Do not calculate total bathrooms unless the document unambiguously supplies
-the necessary components. When a printed total is available, use it directly.
+Use the structured MLS fields as written. Do not reinterpret one feature as
+another. Examples:
 
-Do not calculate acreage from square feet or square feet from acreage.
+- "Gravel" does not mean paved.
+- "Open; Well Landscaped" does not mean wooded.
+- Direct waterfront does not automatically mean deeded water access.
+- "Seller" shown as the source of waterfront information does not describe the
+  legal form of water access.
+- "Dead End" may be represented as road type "other" if needed; it is not an
+  allowed road-type enum itself.
+- Flooring described as "Composition" may be represented as "other"; do not
+  submit "composition" as an enum.
 
-Do not infer a property type solely from architectural style. A ranch can be a
-single-family home, condominium, or another legal property type.
+Do not calculate total bathrooms when the MLS reports full and half bathrooms
+separately. Preserve the printed component counts and let downstream code
+calculate a total if needed.
 
-"Unfinished" is a valid basement value and must be recorded as "unfinished."
-Walk-out access is "walkout" and crawl space is "crawl_space."
+Do not geocode an address. Record coordinates only when both are printed.
 
-Retain the complete original public remarks in source_text.public_remarks when
-they are readable. Do not rewrite, summarize, clean up, or correct the remarks.
-
-Retain the raw MLS feature inventory in source_text.mls_features_raw when it is
-available. This is useful for later verification even after individual features
-have been extracted.
-
-
-ADDRESS AND COORDINATES
-
-- Do not geocode an address in this extraction pass.
-- Do not guess coordinates from a town, map image, parcel description, or ZIP
-  code.
-- Record coordinates only when both latitude and longitude are explicitly
-  printed and readable.
-- Never emit only one coordinate.
-- Do not infer county when it is absent.
+Preserve the complete public remarks exactly as written in
+source_text.public_remarks. Do not summarize or rewrite them.
 
 
-CHECKBOXES AND FORM MARKS
+MULTI-SELECT FEATURES
 
-- A checkbox response requires visible evidence of the selected mark.
-- Distinguish a checked box from an empty box, printed bullet, line artifact,
-  or nearby text.
-- Do not infer a selected answer merely because explanatory prose is adjacent.
-- If the mark is ambiguous, leave the Fact unknown and optionally add an
-  extraction warning.
-- When a yes/no field clearly has one selected response and the form layout is
-  readable, record the selected Boolean value.
+For ObservedSet fields such as heating systems, fuels, basement features,
+styles, exterior materials, road types and site tags:
+
+- Include only schema-valid selected values supported by the document.
+- Use values=[] when no valid selection was extracted.
+- Set complete=true when the full structured MLS feature inventory is visible
+  and readable.
+- Otherwise set complete=false.
+
+Do not add an unprinted feature merely because it seems likely.
 
 
-SELLER DISCLOSURE EXTRACTION
+SELLER DISCLOSURE
 
-Disclosure information belongs in the disclosures section even when a related
-concept also exists in remarks_classification.
+Extract clear disclosure facts, including:
 
-Extract, when supported:
-
-- Roof, window, heating, and septic installation years
+- Roof, window, heating and septic installation years
 - Septic pumping year or complete pumping date
-- Active and historical roof leaks
+- Roof leaks
 - Basement water intrusion
 - Foundation problems
-- Mold, radon, septic, hazardous-material, and other reported problems
-- Material-defect narratives
-- Improvements and repairs
-- Disclosure narratives useful for understanding the facts
+- Mold, radon, septic and hazardous-material issues
+- Material defects and improvements
 
-Treat yes, no, unknown, and unanswered as different states.
+For disclosure yes/no questions:
 
-A historical problem that was repaired is not necessarily an active problem.
-Preserve both the history and the repair language without exaggerating the
-present condition. For example, a repaired past roof leak should not become an
-active roof leak unless the disclosure says the leak remains active.
+- Record true only for a clearly selected or written Yes.
+- Record false only for a clearly selected or written No that answers that
+  specific question.
+- If Unknown is selected, the form is unanswered, or the mark is unclear, omit
+  the field.
 
-For septic pumping information:
+Do not use the answer to one question as the answer to another. Examples:
 
-- Use disclosures.septic_last_pumped_year when only a four-digit year is shown.
-- Use disclosures.septic_last_pumped_date only when a complete calendar date is
-  shown.
-- Never convert a year such as 2024 into 2024-01-01.
+- "No sump pump" does not establish "no foundation problem."
+- "Radon not tested" does not establish "no radon issue."
+- "No underground storage tank" does not by itself establish that no hazardous
+  material of any kind has been reported.
 
-Material-defect and improvement lists should contain separate Fact[str] items
-with specific evidence. Do not combine unrelated items into one long value.
+A past problem that was repaired is not necessarily active. Record an active
+problem only when the disclosure indicates that it is current.
 
+Preserve date precision:
 
-KEEP DISCLOSURES SEPARATE FROM ADVERTISING SIGNALS
+- If only a year is supplied, use the corresponding year field.
+- Use a date field only when a complete date is printed.
+- Never invent January 1 or another date for a year-only response.
 
-The valuation model was trained partly on classifications derived from public
-MLS remarks. A defect known from a seller disclosure is not automatically the
-same variable as a defect advertised in public remarks.
-
-Therefore:
-
-- Do not convert a disclosed water problem into remarks_classification.water_issues.
-- Do not convert a disclosed foundation problem into a remarks foundation
-  signal.
-- Do not convert a roof installation year into remarks_classification.new_roof.
-- Do not convert disclosed defects into known_defects_advertised.
-- Do not copy disclosure language into public remarks.
-
-Keep the factual disclosure information in disclosures. A separate downstream
-step decides how to discuss or model those facts.
+Keep disclosure facts in the disclosures section. Do not turn disclosure facts
+into public-remarks classifications.
 
 
-REMARKS CLASSIFICATION IS DOWNSTREAM
+REMARKS CLASSIFICATION
 
-Do not populate remarks_classification in this pass.
+Do not populate remarks_classification in this extraction call.
 
-The application performs a separate, versioned classification call after the
-factual PropertyRecord has been validated. That downstream call uses only the
-extracted public remarks and applies the training-compatible condition,
-quality, distress, privacy, bucolic, and lifestyle definitions.
-
-Your task here is only to preserve the public remarks accurately and extract
-observable facts.
+The application performs a separate classification step using the extracted
+public remarks. Your only responsibility here is to preserve those remarks
+accurately.
 
 
-DO NOT CALCULATE MODEL FEATURES
+FINAL CHECK
 
-Do not calculate or populate:
+Before calling the tool, check that:
 
-- Regression column names beginning with feat_ or rem_
-- Basement-quality scores
-- Condition scores
-- Logarithmic or spline transformations
-- Census attributes
-- Distance to coast or grocery stores
-- Geographic premiums
-- Price estimates, ranges, discounts, or feature contributions
-- Investment recommendations
+- Every known Fact has a non-null schema-compatible value.
+- No unknown Fact contains false or another resolved value.
+- Every enum value appears exactly in the supplied schema.
+- No Evidence object contains unsupported fields such as notes.
+- No incomplete Evidence object is included.
+- Disclosure Unknown responses were omitted rather than converted to false.
+- No top-level conflict objects were created.
 
-These are derived later by deterministic model code.
-
-
-WARNINGS
-
-Use extraction_warnings sparingly for material extraction limitations, such as:
-
-- An influential field is visibly present but illegible.
-- A checkbox mark cannot be distinguished reliably.
-- Pages appear missing, truncated, or corrupt.
-- The disclosure is unsigned or obviously incomplete when that matters to
-  interpretation.
-- A source conflict could not be resolved.
-
-Do not use warnings for every ordinary unknown field.
-
-
-FINAL OUTPUT
-
-Call the supplied record_property_evidence tool exactly once.
-
-Supply only schema-supported content. Omit unsupported fields and allow schema
-defaults to represent unknown information. Return no explanatory prose outside
-the tool call.
+Call record_property_evidence exactly once. Return no prose outside the tool
+call.
