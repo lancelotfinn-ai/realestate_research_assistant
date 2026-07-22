@@ -7,6 +7,7 @@ import time
 import select
 import threading
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -20,7 +21,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from extract_property import build_property_record
 from property_schema import PropertyRecord
@@ -59,7 +60,9 @@ class RWorker:
             self.cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            # Let R diagnostics appear in Render logs. The worker reserves
+            # stdout exclusively for its newline-delimited JSON protocol.
+            stderr=None,
             bufsize=0,
         )
 
@@ -157,20 +160,11 @@ class RWorker:
 
     def value(
         self,
-        address,
-        user_input,
-        geo_override=None,
+        property_record: dict,
+        asof: Optional[str] = None,
     ):
         """
-        Send one valuation request to the persistent R worker.
-
-        geo_override may contain:
-
-        {
-            "lat": 44.416855,
-            "lon": -68.728069,
-            "tract_fips": "23009966400"
-        }
+        Value one canonical property-v1 record with the persistent R worker.
         """
 
         with self.lock:
@@ -185,9 +179,8 @@ class RWorker:
 
                 request_data = {
                     "id": request_id,
-                    "address": address,
-                    "user_input": user_input,
-                    "geo_override": geo_override,
+                    "property_record": property_record,
+                    "asof": asof,
                 }
 
                 request_line = (
@@ -249,10 +242,10 @@ app = FastAPI(
     lifespan=lifespan,
     title="Maine Housing Analytics Engine",
     description=(
-        "Backend property-valuation API for "
-        "AI function calling."
+        "Evidence-backed Maine property extraction and full-model valuation "
+        "API for AI tool calling."
     ),
-    version="2.1.0",
+    version="3.0.0",
 )
 
 
@@ -379,148 +372,59 @@ async def _save_pdf_upload(
 # REQUEST SCHEMAS
 # ============================================================
 
-class ValuationRequest(BaseModel):
-    address: Optional[str] = Field(
-        None,
-        description=(
-            "Street address or town in Maine. "
-            "Optional when latitude and longitude "
-            "are supplied."
-        ),
-    )
+class ModelSummary(BaseModel):
+    description: Optional[str] = None
+    training_period: Optional[str] = None
+    n_observations: Optional[int] = None
+    r_squared: Optional[float] = None
 
-    latitude: Optional[float] = Field(
-        None,
-        ge=-90,
-        le=90,
-        description=(
-            "Property latitude, preferably from "
-            "the MLS record."
-        ),
-    )
 
-    longitude: Optional[float] = Field(
-        None,
-        ge=-180,
-        le=180,
-        description=(
-            "Property longitude, preferably from "
-            "the MLS record."
-        ),
-    )
+class GeographySummary(BaseModel):
+    source: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    tract_fips: Optional[str] = None
+    tract_matched: Optional[bool] = None
+    predictors: dict[str, Optional[float]] = Field(default_factory=dict)
 
-    tract_fips: Optional[str] = Field(
-        None,
-        pattern=r"^\d{11}$",
-        description=(
-            "Optional 11-digit 2020 Census tract "
-            "GEOID. If omitted, the service will "
-            "attempt to derive it from coordinates."
-        ),
-    )
 
-    square_feet: Optional[float] = Field(
-        None,
-        gt=0,
-        description=(
-            "Total finished living area in "
-            "square feet."
-        ),
-    )
+class ValuationDriver(BaseModel):
+    variable: str
+    label: str
+    dollar_effect: float
+    pct_effect: float
+    comparison: str
 
-    bedrooms: Optional[int] = Field(
-        None,
-        ge=0,
-        description="Total number of bedrooms.",
-    )
 
-    bathrooms: Optional[float] = Field(
-        None,
-        ge=0,
-        description=(
-            "Total bathrooms; half-baths count "
-            "as 0.5."
-        ),
-    )
+class ValuationNarrative(BaseModel):
+    summary: str
+    principal_drivers: list[str] = Field(default_factory=list)
+    geography: str
+    disclosure_caveats: list[str] = Field(default_factory=list)
+    limitations: str
 
-    lot_acres: Optional[float] = Field(
-        None,
-        ge=0,
-        description="Lot size in acres.",
-    )
 
-    year_built: Optional[int] = Field(
-        None,
-        ge=1600,
-        le=2100,
-        description=(
-            "Year the home was constructed."
-        ),
-    )
+class InputDiagnostics(BaseModel):
+    input_mode: Optional[str] = None
+    n_provided: int
+    supplied_variables: list[str] = Field(default_factory=list)
+    imputed_impact_share: float
+    imputed_variables: list[str] = Field(default_factory=list)
+    ignored_variables: list[str] = Field(default_factory=list)
 
-    is_mobile_home: Optional[bool] = Field(
-        None,
-        description=(
-            "True for a mobile, manufactured, "
-            "or double-wide home."
-        ),
-    )
 
-    is_condo: Optional[bool] = Field(
-        None,
-        description=(
-            "True if the property is a condominium."
-        ),
-    )
-
-    water_view: Optional[bool] = Field(
-        None,
-        description=(
-            "True if the property has seasonal "
-            "or year-round water views."
-        ),
-    )
-
-    water_frontage: Optional[bool] = Field(
-        None,
-        description=(
-            "True if the property has direct "
-            "water or tidal frontage."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def validate_location(self):
-        has_address = bool(
-            self.address and self.address.strip()
-        )
-
-        has_latitude = self.latitude is not None
-        has_longitude = self.longitude is not None
-
-        if has_latitude != has_longitude:
-            raise ValueError(
-                "latitude and longitude must be "
-                "supplied together"
-            )
-
-        if not has_address and not (
-            has_latitude and has_longitude
-        ):
-            raise ValueError(
-                "provide either an address or both "
-                "latitude and longitude"
-            )
-
-        if self.tract_fips is not None and not (
-            has_latitude and has_longitude
-        ):
-            raise ValueError(
-                "tract_fips may only be supplied "
-                "with latitude and longitude"
-            )
-
-        return self
+class ValuationResponse(BaseModel):
+    estimate: float
+    range_low: float
+    range_high: float
+    range_method: str
+    as_of: date
+    model: ModelSummary
+    geography: GeographySummary
+    input_diagnostics: InputDiagnostics
+    drivers: list[ValuationDriver] = Field(default_factory=list)
+    narrative: ValuationNarrative
+    suggested_follow_up_questions: list[str] = Field(default_factory=list)
 
 
 class ListingFetchRequest(BaseModel):
@@ -534,35 +438,13 @@ class ListingFetchRequest(BaseModel):
 
 
 # ============================================================
-# MODEL FIELD MAPPINGS
-# ============================================================
-
-FIELD_MAP = {
-    "square_feet": "SqFt.Finished.Total",
-    "bedrooms": "X..Bedrooms",
-    "bathrooms": "Total.Baths",
-    "lot_acres": "Lot.Size.Acres....",
-    "year_built": "Year.Built",
-}
-
-BOOL_MAP = {
-    "is_mobile_home": "is_mh",
-    "is_condo": "is_condo",
-    "water_view": "feat_water_view",
-    "water_frontage": "feat_water_frontage",
-}
-
-
-# ============================================================
 # RESPONSE SHAPING
 # ============================================================
 
 def _shape_valuation(result):
     """
-    Convert the internal R response into the public API response.
-
-    Geographic and input diagnostics are retained so callers
-    can verify how the estimate was produced.
+    Convert the R worker result into the documented public response without
+    discarding model provenance, drivers, narrative, or missing-input detail.
     """
 
     if not result or not result.get("ok"):
@@ -572,25 +454,36 @@ def _shape_valuation(result):
             else None
         )
 
-        response = {
-            "error": (
-                reason
-                or "could not estimate valuation data"
-            )
-        }
+        status_code = 422 if reason in {
+            "could_not_resolve_geography",
+            "could_not_geocode",
+        } else 500
 
-        if result:
-            response["geography_source"] = result.get(
-                "geography_source"
-            )
+        raise HTTPException(
+            status_code=status_code,
+            detail=reason or "The valuation engine did not return a result",
+        )
 
-        return response
+    geographic_predictors = (
+        result.get("geographic_features") or {}
+    )
+
+    # jsonlite serializes a one-row R data.frame as a one-element array when
+    # dataframe="rows". Expose the row itself in the public API.
+    if (
+        isinstance(geographic_predictors, list)
+        and len(geographic_predictors) == 1
+        and isinstance(geographic_predictors[0], dict)
+    ):
+        geographic_predictors = geographic_predictors[0]
 
     return {
         "estimate": result["estimate"],
         "range_low": result["low"],
         "range_high": result["high"],
+        "range_method": result.get("range_method"),
         "as_of": result.get("asof"),
+        "model": result.get("model") or {},
 
         "geography": {
             "source": result.get(
@@ -604,16 +497,32 @@ def _shape_valuation(result):
             "tract_matched": result.get(
                 "tract_matched"
             ),
+            "predictors": geographic_predictors,
         },
 
         "input_diagnostics": {
             "n_provided": result.get(
                 "n_provided"
             ),
+            "input_mode": result.get(
+                "input_mode"
+            ),
+            "supplied_variables": result.get(
+                "supplied_variables"
+            ) or [],
             "imputed_impact_share": result.get(
                 "imputed_impact_share"
             ),
+            "imputed_variables": result.get(
+                "imputed_variables"
+            ) or [],
+            "ignored_variables": result.get(
+                "ignored_variables"
+            ) or [],
         },
+
+        "drivers": result.get("drivers") or [],
+        "narrative": result.get("narrative") or {},
 
         "suggested_follow_up_questions": (
             result.get(
@@ -629,9 +538,8 @@ def _shape_valuation(result):
 # ============================================================
 
 def _valuation_cli(
-    address,
-    user_input,
-    geo_override=None,
+    property_record: dict,
+    asof: Optional[str] = None,
 ):
     """
     Run one fresh R process if the persistent worker fails.
@@ -639,9 +547,8 @@ def _valuation_cli(
 
     try:
         payload = json.dumps({
-            "address": address,
-            "user_input": user_input,
-            "geo_override": geo_override,
+            "property_record": property_record,
+            "asof": asof,
         })
 
         process = subprocess.run(
@@ -652,76 +559,47 @@ def _valuation_cli(
         )
 
         if process.returncode != 0:
-            return {
-                "error": (
-                    "fallback valuation script failed"
-                ),
-                "detail": (
-                    process.stderr.strip() or None
-                ),
-            }
+            raise HTTPException(
+                status_code=500,
+                detail="Fallback valuation process failed",
+            )
 
         result = json.loads(process.stdout)
 
         return _shape_valuation(result)
 
     except Exception as error:
-        return {
-            "error": (
-                "valuation engine completely "
-                f"unavailable: {error}"
-            )
-        }
+        if isinstance(error, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=503,
+            detail="The valuation engine is unavailable",
+        ) from error
 
 
 # ============================================================
 # SHARED VALUATION LOGIC
 # ============================================================
 
-def _run_valuation(req: ValuationRequest):
+def _run_valuation(
+    record: PropertyRecord,
+    as_of: Optional[date] = None,
+):
     """
-    Translate public request fields into model fields and run
-    the valuation. Coordinates take priority over address
-    geocoding.
+    Pass a validated canonical property record to R. All feature engineering
+    stays in valuation.R so the training encodings have one implementation.
     """
-
-    fields = req.model_dump()
-    user_input = {}
-
-    for public_name, model_name in FIELD_MAP.items():
-        value = fields.get(public_name)
-
-        if value is not None:
-            user_input[model_name] = value
-
-    for public_name, model_name in BOOL_MAP.items():
-        value = fields.get(public_name)
-
-        if value is not None:
-            user_input[model_name] = (
-                1 if value else 0
-            )
-
-    geo_override = None
-
-    if (
-        req.latitude is not None
-        and req.longitude is not None
-    ):
-        geo_override = {
-            "lat": req.latitude,
-            "lon": req.longitude,
-            "tract_fips": req.tract_fips,
-        }
+    property_record = record.model_dump(
+        mode="json",
+        exclude_none=False,
+    )
+    asof = as_of.isoformat() if as_of else None
 
     try:
         result = r_worker.value(
-            address=req.address,
-            user_input=user_input,
-            geo_override=geo_override,
+            property_record=property_record,
+            asof=asof,
         )
-
-        return _shape_valuation(result)
 
     except Exception as error:
         print(
@@ -730,10 +608,15 @@ def _run_valuation(req: ValuationRequest):
         )
 
         return _valuation_cli(
-            address=req.address,
-            user_input=user_input,
-            geo_override=geo_override,
+            property_record=property_record,
+            asof=asof,
         )
+
+    # Keep model/input errors returned by a healthy worker distinct from
+    # transport failures. _shape_valuation converts them to an appropriate
+    # HTTP response without rerunning the same invalid request in a new R
+    # process.
+    return _shape_valuation(result)
 
 
 # ============================================================
@@ -870,18 +753,23 @@ async def extract_property_record(
         ) from error
 
 
-@app.post("/estimate_home_value")
+@app.post(
+    "/estimate_home_value",
+    response_model=ValuationResponse,
+)
 def estimate_home_value(
-    req: ValuationRequest,
+    record: PropertyRecord,
+    as_of: Optional[date] = None,
 ):
     """
-    Calculate a model-based market-value estimate.
+    Apply the full Maine hedonic model to a canonical PropertyRecord.
 
-    Supplied coordinates take priority over Census
-    street-address geocoding.
+    The request body is the property-v1 JSON returned by
+    /extract_property_record. Supplied coordinates take priority over address
+    geocoding. When as_of is omitted, the current date is used.
     """
 
-    return _run_valuation(req)
+    return _run_valuation(record, as_of)
 
 
 @app.post("/fetch_listing_specs")
@@ -893,7 +781,7 @@ def fetch_listing_specs(
     real-estate listing webpage.
 
     This endpoint does not yet normalize the page into a complete
-    ValuationRequest.
+    PropertyRecord.
     """
 
     try:
