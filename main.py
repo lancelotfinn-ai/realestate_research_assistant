@@ -16,15 +16,22 @@ from bs4 import BeautifulSoup
 from fastapi import (
     FastAPI,
     File,
+    Form,
     Header,
     HTTPException,
     UploadFile,
 )
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from anthropic import Anthropic
 
 from extract_property import build_property_record
 from property_schema import PropertyRecord
+
+
+BASE_DIR = Path(__file__).resolve().parent
+NARRATIVE_PROMPT_PATH = BASE_DIR / "descriptive_essay.txt"
+NARRATIVE_PROMPT_VERSION = "descriptive-essay-v1"
 
 
 # ============================================================
@@ -427,6 +434,29 @@ class ValuationResponse(BaseModel):
     suggested_follow_up_questions: list[str] = Field(default_factory=list)
 
 
+class NarrativeUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+class NarrativeMetadata(BaseModel):
+    model: str
+    prompt_version: str = NARRATIVE_PROMPT_VERSION
+    stop_reason: Optional[str] = None
+    usage: NarrativeUsage
+
+
+class DescriptiveEssayResponse(BaseModel):
+    status: str = "complete"
+    property_record: PropertyRecord
+    valuation: ValuationResponse
+    descriptive_essay: str
+    scenarios: list[dict] = Field(default_factory=list)
+    narrative_metadata: NarrativeMetadata
+
+
 class ListingFetchRequest(BaseModel):
     url: str = Field(
         ...,
@@ -620,11 +650,314 @@ def _run_valuation(
 
 
 # ============================================================
+# DESCRIPTIVE NARRATIVE GENERATION
+# ============================================================
+
+def _load_narrative_prompt():
+    """
+    Load the fixed narrative instructions shipped with the service.
+    """
+
+    try:
+        prompt = NARRATIVE_PROMPT_PATH.read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError as error:
+        raise RuntimeError(
+            "descriptive_essay.txt could not be loaded"
+        ) from error
+
+    if not prompt:
+        raise RuntimeError(
+            "descriptive_essay.txt is empty"
+        )
+
+    return prompt
+
+
+def _narrative_configuration():
+    model = os.getenv(
+        "ANTHROPIC_NARRATIVE_MODEL"
+    )
+
+    if not model:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "ANTHROPIC_NARRATIVE_MODEL is missing"
+            ),
+        )
+
+    raw_max_tokens = os.getenv(
+        "NARRATIVE_MAX_TOKENS",
+        "3000",
+    )
+
+    try:
+        max_tokens = int(raw_max_tokens)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "NARRATIVE_MAX_TOKENS must be an integer"
+            ),
+        ) from error
+
+    if not 500 <= max_tokens <= 8000:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "NARRATIVE_MAX_TOKENS must be between "
+                "500 and 8000"
+            ),
+        )
+
+    return model, max_tokens
+
+
+def _generate_descriptive_essay(
+    property_record: dict,
+    valuation: dict,
+):
+    """
+    Ask Claude to interpret, but never recompute, the structured valuation.
+
+    The prompt is cached because it is identical across properties. Dynamic
+    property evidence remains in the user message so it cannot contaminate
+    later requests.
+    """
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "ANTHROPIC_API_KEY is missing"
+            ),
+        )
+
+    model, max_tokens = _narrative_configuration()
+
+    try:
+        prompt = _load_narrative_prompt()
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=str(error),
+        ) from error
+
+    evidence_packet = {
+        "property_record": property_record,
+        "baseline_valuation": valuation,
+        "counterfactual_valuations": [],
+        "verified_community_context": None,
+        "instructions": (
+            "Write the completed report in Markdown. "
+            "Return only the report. No counterfactual "
+            "valuations or independently verified community "
+            "context were supplied for this request. Do not "
+            "invent them."
+        ),
+    }
+
+    client = Anthropic(
+        api_key=os.environ["ANTHROPIC_API_KEY"]
+    )
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[
+                {
+                    "type": "text",
+                    "text": prompt,
+                    "cache_control": {
+                        "type": "ephemeral"
+                    },
+                }
+            ],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "PROPERTY ANALYSIS PACKET\n\n"
+                        + json.dumps(
+                            evidence_packet,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            default=str,
+                        )
+                    ),
+                }
+            ],
+        )
+    except Exception as error:
+        print(
+            "[narrative-generation] failed: "
+            f"{type(error).__name__}: {error}"
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Narrative generation failed. "
+                "Property extraction and valuation had "
+                "already completed."
+            ),
+        ) from error
+
+    essay_parts = [
+        block.text
+        for block in response.content
+        if getattr(block, "type", None) == "text"
+        and getattr(block, "text", None)
+    ]
+    essay = "\n".join(essay_parts).strip()
+
+    if not essay:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Narrative generation returned no text. "
+                "Property extraction and valuation had "
+                "already completed."
+            ),
+        )
+
+    usage = response.usage
+
+    return {
+        "status": (
+            "incomplete"
+            if response.stop_reason == "max_tokens"
+            else "complete"
+        ),
+        "descriptive_essay": essay,
+        "metadata": {
+            "model": model,
+            "prompt_version": (
+                NARRATIVE_PROMPT_VERSION
+            ),
+            "stop_reason": response.stop_reason,
+            "usage": {
+                "input_tokens": getattr(
+                    usage,
+                    "input_tokens",
+                    0,
+                ),
+                "output_tokens": getattr(
+                    usage,
+                    "output_tokens",
+                    0,
+                ),
+                "cache_creation_input_tokens": getattr(
+                    usage,
+                    "cache_creation_input_tokens",
+                    0,
+                ),
+                "cache_read_input_tokens": getattr(
+                    usage,
+                    "cache_read_input_tokens",
+                    0,
+                ),
+            },
+        },
+    }
+
+
+# ============================================================
+# SHARED DOCUMENT EXTRACTION
+# ============================================================
+
+async def _extract_uploaded_property(
+    mls: UploadFile,
+    disclosure: UploadFile,
+):
+    """
+    Save, validate, extract, and validate one pair of property PDFs.
+    """
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document ingestion is not configured: "
+                "ANTHROPIC_API_KEY is missing"
+            ),
+        )
+
+    anthropic_model = os.getenv("ANTHROPIC_MODEL")
+
+    if not anthropic_model:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document ingestion is not configured: "
+                "ANTHROPIC_MODEL is missing"
+            ),
+        )
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="property-extraction-",
+        ) as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            mls_path = temporary_path / "mls.pdf"
+            disclosure_path = (
+                temporary_path / "disclosure.pdf"
+            )
+
+            await _save_pdf_upload(
+                mls,
+                mls_path,
+            )
+            await _save_pdf_upload(
+                disclosure,
+                disclosure_path,
+            )
+
+            return await run_in_threadpool(
+                build_property_record,
+                str(mls_path),
+                str(disclosure_path),
+                anthropic_model,
+            )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        print(
+            "[document-extraction] failed: "
+            f"{type(error).__name__}: {error}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Property document extraction failed. "
+                "See service logs for the internal error."
+            ),
+        ) from error
+
+
+# ============================================================
 # API ENDPOINTS
 # ============================================================
 
 @app.get("/health")
 def health():
+    narrative_prompt_loaded = False
+
+    try:
+        narrative_prompt_loaded = bool(
+            _load_narrative_prompt()
+        )
+    except RuntimeError:
+        pass
+
     return {
         "status": "ok",
         "r_worker_alive": r_worker._alive(),
@@ -637,6 +970,19 @@ def health():
             ),
             "ingestion_auth_configured": bool(
                 os.getenv("INGESTION_API_KEY")
+            ),
+        },
+        "narrative_generation": {
+            "anthropic_key_configured": bool(
+                os.getenv("ANTHROPIC_API_KEY")
+            ),
+            "narrative_model_configured": bool(
+                os.getenv(
+                    "ANTHROPIC_NARRATIVE_MODEL"
+                )
+            ),
+            "prompt_loaded": (
+                narrative_prompt_loaded
             ),
         },
     }
@@ -682,75 +1028,92 @@ async def extract_property_record(
 
     _verify_ingestion_key(x_ingestion_key)
 
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Document ingestion is not configured: "
-                "ANTHROPIC_API_KEY is missing"
+    return await _extract_uploaded_property(
+        mls,
+        disclosure,
+    )
+
+
+@app.post(
+    "/generate_descriptive_essay",
+    response_model=DescriptiveEssayResponse,
+)
+async def generate_property_descriptive_essay(
+    mls: Annotated[
+        UploadFile,
+        File(
+            ...,
+            description="MLS listing PDF",
+        ),
+    ],
+    disclosure: Annotated[
+        UploadFile,
+        File(
+            ...,
+            description="Seller property-disclosure PDF",
+        ),
+    ],
+    as_of: Annotated[
+        Optional[date],
+        Form(
+            description=(
+                "Optional valuation date in YYYY-MM-DD "
+                "format"
             ),
-        )
-
-    anthropic_model = os.getenv("ANTHROPIC_MODEL")
-
-    if not anthropic_model:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Document ingestion is not configured: "
-                "ANTHROPIC_MODEL is missing"
+        ),
+    ] = None,
+    x_ingestion_key: Annotated[
+        Optional[str],
+        Header(
+            description=(
+                "Application-level credential for the "
+                "document-ingestion endpoint"
             ),
-        )
+        ),
+    ] = None,
+):
+    """
+    Extract a canonical property record, run the full R valuation model,
+    and ask the configured narrative model to return a descriptive report.
+    """
 
-    try:
-        with tempfile.TemporaryDirectory(
-            prefix="property-extraction-",
-        ) as temporary_directory:
-            temporary_path = Path(temporary_directory)
-            mls_path = temporary_path / "mls.pdf"
-            disclosure_path = (
-                temporary_path / "disclosure.pdf"
-            )
+    _verify_ingestion_key(x_ingestion_key)
+    _narrative_configuration()
 
-            await _save_pdf_upload(
-                mls,
-                mls_path,
-            )
-            await _save_pdf_upload(
-                disclosure,
-                disclosure_path,
-            )
+    record = await _extract_uploaded_property(
+        mls,
+        disclosure,
+    )
 
-            # PDF rendering and the external Claude request are
-            # blocking operations. Run them outside FastAPI's
-            # asynchronous event loop.
-            record = await run_in_threadpool(
-                build_property_record,
-                str(mls_path),
-                str(disclosure_path),
-                anthropic_model,
-            )
+    valuation = await run_in_threadpool(
+        _run_valuation,
+        record,
+        as_of,
+    )
 
-            return record
+    property_record = record.model_dump(
+        mode="json",
+        exclude_none=False,
+    )
 
-    except HTTPException:
-        raise
+    narrative_result = await run_in_threadpool(
+        _generate_descriptive_essay,
+        property_record,
+        valuation,
+    )
 
-    except Exception as error:
-        # Keep operational detail in Render logs without returning
-        # credentials, document text, or internal paths to clients.
-        print(
-            "[document-extraction] failed: "
-            f"{type(error).__name__}: {error}"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Property document extraction failed. "
-                "See service logs for the internal error."
-            ),
-        ) from error
+    return {
+        "status": narrative_result["status"],
+        "property_record": property_record,
+        "valuation": valuation,
+        "descriptive_essay": narrative_result[
+            "descriptive_essay"
+        ],
+        "scenarios": [],
+        "narrative_metadata": narrative_result[
+            "metadata"
+        ],
+    }
 
 
 @app.post(
