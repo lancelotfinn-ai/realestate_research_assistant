@@ -172,19 +172,66 @@ encode_property_record <- function(record) {
   }
 
   # Core structure.
+  # Core structure.
   put_fact("SqFt.Finished.Total", c("structure", "finished_square_feet"),
            "finished living area", "structure", as.numeric)
   put_fact("Lot.Size.Acres....", c("structure", "lot_acres"),
            "lot size", "structure", as.numeric)
   put_fact("X..Bedrooms", c("structure", "bedrooms"),
            "bedrooms", "structure", as.numeric)
-  put_fact("Total.Baths", c("structure", "total_bathrooms"),
-           "bathrooms", "structure", as.numeric)
+
+  # Prefer an explicitly reported total bathroom count. When the MLS reports
+  # full and half bathrooms separately, calculate the model input as:
+  #
+  #   total bathrooms = full bathrooms + 0.5 * half bathrooms
+  #
+  # Require both component counts so that an unknown half-bath count is not
+  # silently treated as zero.
+  total_bathrooms <- known_value(
+    record,
+    c("structure", "total_bathrooms")
+  )
+
+  if (!is.null(total_bathrooms)) {
+    put(
+      "Total.Baths",
+      as.numeric(total_bathrooms),
+      "bathrooms",
+      "structure"
+    )
+  } else {
+    full_bathrooms <- known_value(
+      record,
+      c("structure", "full_bathrooms")
+    )
+
+    half_bathrooms <- known_value(
+      record,
+      c("structure", "half_bathrooms")
+    )
+
+    if (
+      !is.null(full_bathrooms) &&
+      !is.null(half_bathrooms)
+    ) {
+      calculated_bathrooms <-
+        as.numeric(full_bathrooms) +
+        0.5 * as.numeric(half_bathrooms)
+
+      put(
+        "Total.Baths",
+        calculated_bathrooms,
+        "bathrooms calculated from full and half baths",
+        "structure"
+      )
+    }
+  }
+
   put_fact("Year.Built", c("structure", "year_built"),
            "year built", "structure", as.numeric)
   put_bool("feat_new_construction", c("structure", "new_construction"),
            "new construction", "structure")
-
+           
   property_type <- known_value(record, c("structure", "property_type"))
   if (!is.null(property_type)) {
     put("is_mh", as.integer(property_type == "mobile_manufactured"),
