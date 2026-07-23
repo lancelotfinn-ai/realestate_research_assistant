@@ -1,0 +1,28 @@
+{
+  "structure.total_bathrooms": {
+    "model_variable": "Total.Baths",
+    "type": "number",
+    "minimum": 0,
+    "maximum": 20,
+    "modifiable": true,
+    "label": "Total bathrooms",
+    "feasibility_notes": [
+      "Confirm available space",
+      "Confirm plumbing and septic capacity",
+      "Confirm permits"
+    ]
+  },
+  "site.driveway_surface": {
+    "model_variable": "feat_driveway_paved",
+    "type": "enum",
+    "allowed_values": ["gravel", "paved"],
+    "modifiable": true,
+    "label": "Driveway surface"
+  },
+  "site.waterfront": {
+    "model_variable": "feat_water_frontage",
+    "type": "boolean",
+    "modifiable": false,
+    "label": "Direct water frontage"
+  }
+}
