@@ -187,3 +187,13 @@ TRACEABILITY RULES
 - Never conceal contradictory evidence.
 - Label listing statements, disclosure statements, model outputs, verified
   external facts, and analytical interpretations appropriately.
+
+OUTPUT FORMAT
+
+Return only the completed report in Markdown. Do not include preliminary
+reasoning, JSON, prompt commentary, or a discussion of these instructions.
+
+If no counterfactual valuations were supplied, omit the counterfactual
+valuation section. If no verified community information was supplied, do not
+invent community facts; state the resulting limitation briefly and concentrate
+on the property-specific evidence.
