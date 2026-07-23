@@ -461,14 +461,49 @@ encode_property_record <- function(record) {
       disclosure_caveats <- c(disclosure_caveats, caveat_fields[[name]])
     }
   }
-  material_defects <- get_path(record, c("disclosures", "material_defects"), list())
-  for (fact in material_defects) {
-    if (is.list(fact) && identical(fact$status, "known") && !is.null(fact$value)) {
-      disclosure_caveats <- c(disclosure_caveats,
-                              paste0("Disclosure item: ", fact$value))
-    }
-  }
+  material_defects <- get_path(
+    record,
+    c("disclosures", "material_defects"),
+    list()
+  )
 
+  non_defect_placeholders <- c(
+    "",
+    "none",
+    "none known",
+    "no known defects",
+    "no defects known",
+    "no known issues",
+    "not applicable",
+    "n/a",
+    "na"
+  )
+
+  for (fact in material_defects) {
+    if (
+      !is.list(fact) ||
+      !identical(fact$status, "known") ||
+      is.null(fact$value)
+    ) {
+      next
+    }
+
+    defect_text <- trimws(as.character(fact$value))
+    normalized_text <- tolower(defect_text)
+
+    if (
+      !nzchar(defect_text) ||
+      normalized_text %in% non_defect_placeholders
+    ) {
+      next
+    }
+
+    disclosure_caveats <- c(
+      disclosure_caveats,
+      paste0("Disclosure item: ", defect_text)
+    )
+  }
+  
   list(values = values, provenance = provenance,
        disclosure_caveats = unique(disclosure_caveats))
 }
