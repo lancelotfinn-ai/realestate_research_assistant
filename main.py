@@ -32,7 +32,9 @@ from property_schema import PropertyRecord
 BASE_DIR = Path(__file__).resolve().parent
 NARRATIVE_PROMPT_PATH = BASE_DIR / "descriptive_essay.txt"
 NARRATIVE_PROMPT_VERSION = "descriptive-essay-v1"
-
+# --- NEW: Seller Positioning Audit Prompt ---
+SELLER_AUDIT_PROMPT_PATH = BASE_DIR / "seller_positioning_audit.txt"
+SELLER_AUDIT_PROMPT_VERSION = "seller-audit-v1"
 
 # ============================================================
 # PERSISTENT R VALUATION WORKER
@@ -674,6 +676,114 @@ def _load_narrative_prompt():
 
     return prompt
 
+def _load_seller_audit_prompt():
+    """Load the seller positioning audit instructions from disk."""
+    try:
+        prompt = SELLER_AUDIT_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise RuntimeError("seller_positioning_audit.txt could not be loaded") from error
+
+    if not prompt:
+        raise RuntimeError("seller_positioning_audit.txt is empty")
+
+    return prompt
+
+
+def _generate_seller_audit(property_record: dict, valuation: dict):
+    """Ask Claude to generate a seller-facing positioning & price audit."""
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="Narrative generation is not configured: ANTHROPIC_API_KEY is missing",
+        )
+
+    model, max_tokens = _narrative_configuration()
+
+    try:
+        prompt = _load_seller_audit_prompt()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    evidence_packet = {
+        "property_record": property_record,
+        "baseline_valuation": valuation,
+        "counterfactual_valuations": [],
+        "verified_community_context": None,
+        "instructions": (
+            "Write the completed report in Markdown. "
+            "Return only the report, including the Agent Summary Pitch "
+            "and No-URL SMS Teaser at the end as specified in the prompt."
+        ),
+    }
+
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[
+                {
+                    "type": "text",
+                    "text": prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "PROPERTY ANALYSIS PACKET\n\n"
+                        + json.dumps(
+                            evidence_packet,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            default=str,
+                        )
+                    ),
+                }
+            ],
+        )
+    except Exception as error:
+        print(f"[seller-audit-generation] failed: {type(error).__name__}: {error}")
+        raise HTTPException(
+            status_code=502,
+            detail="Seller audit generation failed. Valuation completed successfully.",
+        ) from error
+
+    essay_parts = [
+        block.text
+        for block in response.content
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+    ]
+    essay = "\n".join(essay_parts).strip()
+
+    if not essay:
+        raise HTTPException(
+            status_code=502,
+            detail="Seller audit generation returned no text.",
+        )
+
+    usage = response.usage
+
+    return {
+        "status": (
+            "incomplete" if response.stop_reason == "max_tokens" else "complete"
+        ),
+        "descriptive_essay": essay,
+        "metadata": {
+            "model": model,
+            "prompt_version": SELLER_AUDIT_PROMPT_VERSION,
+            "stop_reason": response.stop_reason,
+            "usage": {
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0),
+                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0),
+            },
+        },
+    }
+
 
 def _narrative_configuration():
     model = os.getenv(
@@ -948,13 +1058,18 @@ async def _extract_uploaded_property(
 # ============================================================
 
 @app.get("/health")
+@app.get("/health")
 def health():
     narrative_prompt_loaded = False
+    seller_audit_prompt_loaded = False
 
     try:
-        narrative_prompt_loaded = bool(
-            _load_narrative_prompt()
-        )
+        narrative_prompt_loaded = bool(_load_narrative_prompt())
+    except RuntimeError:
+        pass
+
+    try:
+        seller_audit_prompt_loaded = bool(_load_seller_audit_prompt())
     except RuntimeError:
         pass
 
@@ -962,28 +1077,15 @@ def health():
         "status": "ok",
         "r_worker_alive": r_worker._alive(),
         "document_extraction": {
-            "anthropic_key_configured": bool(
-                os.getenv("ANTHROPIC_API_KEY")
-            ),
-            "anthropic_model_configured": bool(
-                os.getenv("ANTHROPIC_MODEL")
-            ),
-            "ingestion_auth_configured": bool(
-                os.getenv("INGESTION_API_KEY")
-            ),
+            "anthropic_key_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "anthropic_model_configured": bool(os.getenv("ANTHROPIC_MODEL")),
+            "ingestion_auth_configured": bool(os.getenv("INGESTION_API_KEY")),
         },
         "narrative_generation": {
-            "anthropic_key_configured": bool(
-                os.getenv("ANTHROPIC_API_KEY")
-            ),
-            "narrative_model_configured": bool(
-                os.getenv(
-                    "ANTHROPIC_NARRATIVE_MODEL"
-                )
-            ),
-            "prompt_loaded": (
-                narrative_prompt_loaded
-            ),
+            "anthropic_key_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "narrative_model_configured": bool(os.getenv("ANTHROPIC_NARRATIVE_MODEL")),
+            "descriptive_essay_loaded": narrative_prompt_loaded,
+            "seller_audit_prompt_loaded": seller_audit_prompt_loaded,
         },
     }
 
@@ -1115,6 +1217,63 @@ async def generate_property_descriptive_essay(
         ],
     }
 
+
+@app.post(
+    "/generate_seller_audit",
+    response_model=DescriptiveEssayResponse,
+)
+async def generate_seller_audit(
+    mls: Annotated[
+        UploadFile,
+        File(..., description="MLS listing PDF"),
+    ],
+    disclosure: Annotated[
+        UploadFile,
+        File(..., description="Seller property-disclosure PDF"),
+    ],
+    as_of: Annotated[
+        Optional[date],
+        Form(description="Optional valuation date in YYYY-MM-DD format"),
+    ] = None,
+    x_ingestion_key: Annotated[
+        Optional[str],
+        Header(description="Application-level credential for document ingestion"),
+    ] = None,
+):
+    """
+    Extract a canonical property record, run the full R valuation model,
+    and generate a seller-facing positioning & price diagnostic audit.
+    """
+    _verify_ingestion_key(x_ingestion_key)
+    _narrative_configuration()
+
+    record = await _extract_uploaded_property(mls, disclosure)
+
+    valuation = await run_in_threadpool(
+        _run_valuation,
+        record,
+        as_of,
+    )
+
+    property_record = record.model_dump(
+        mode="json",
+        exclude_none=False,
+    )
+
+    narrative_result = await run_in_threadpool(
+        _generate_seller_audit,
+        property_record,
+        valuation,
+    )
+
+    return {
+        "status": narrative_result["status"],
+        "property_record": property_record,
+        "valuation": valuation,
+        "descriptive_essay": narrative_result["descriptive_essay"],
+        "scenarios": [],
+        "narrative_metadata": narrative_result["metadata"],
+    }
 
 @app.post(
     "/estimate_home_value",
