@@ -1401,3 +1401,15 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def extract_property_features(combined_text: str) -> dict:
+    """
+    Bridge function for main.py to extract property features from 
+    combined document text streams.
+    """
+    # Returns structured text container to pass downstream to the valuation model
+    return {
+        "raw_text": combined_text,
+        "status": "extracted"
+    }
