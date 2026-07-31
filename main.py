@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import secrets
 import subprocess
@@ -25,7 +26,6 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from anthropic import Anthropic
 
-from document_ingest import download_gdrive_pdf, process_document_urls
 from extract_property import build_property_record
 from property_schema import PropertyRecord
 
@@ -171,10 +171,6 @@ class RWorker:
         property_record: dict,
         asof: Optional[str] = None,
     ):
-        """
-        Value one canonical property-v1 record with the persistent R worker.
-        """
-
         with self.lock:
             if not self._alive():
                 self.start()
@@ -258,15 +254,13 @@ app = FastAPI(
 
 
 # ============================================================
-# DOCUMENT-INGESTION CONFIGURATION
+# GOOGLE DRIVE & FILE DOWNLOAD HELPERS
 # ============================================================
 
 MAX_PDF_BYTES = 20 * 1024 * 1024
 
 
-def _verify_ingestion_key(
-    supplied_key: Optional[str],
-):
+def _verify_ingestion_key(supplied_key: Optional[str]):
     expected_key = os.getenv("INGESTION_API_KEY")
 
     if not expected_key:
@@ -278,13 +272,7 @@ def _verify_ingestion_key(
             ),
         )
 
-    if (
-        not supplied_key
-        or not secrets.compare_digest(
-            supplied_key,
-            expected_key,
-        )
-    ):
+    if not supplied_key or not secrets.compare_digest(supplied_key, expected_key):
         raise HTTPException(
             status_code=401,
             detail="Invalid ingestion API key",
@@ -292,10 +280,42 @@ def _verify_ingestion_key(
         )
 
 
-async def _save_pdf_upload(
-    upload: UploadFile,
-    destination: Path,
-):
+def _download_gdrive_pdf(url: str, destination: Path) -> None:
+    """
+    Extracts the Google Drive file ID, downloads the direct PDF byte stream,
+    and saves it to the temporary destination file on disk.
+    """
+    pattern = r'(?:file/d/|id=)([\w-]+)'
+    match = re.search(pattern, url)
+    file_id = match.group(1) if match else None
+
+    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}" if file_id else url
+
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    response = session.get(direct_url, headers=headers, allow_redirects=True)
+    response.raise_for_status()
+
+    content = response.content
+
+    if not content.startswith(b"%PDF"):
+        # Handle Google Drive's virus scan confirmation redirect
+        confirm_url = f"{direct_url}&confirm=t"
+        response = session.get(confirm_url, headers=headers, allow_redirects=True)
+        content = response.content
+
+    if not content.startswith(b"%PDF"):
+        raise ValueError(
+            f"The link '{url}' did not return valid PDF bytes. Ensure Google Drive permissions are set to 'Anyone with the link can view'."
+        )
+
+    destination.write_bytes(content)
+
+
+async def _save_pdf_upload(upload: UploadFile, destination: Path):
     allowed_content_types = {
         "application/pdf",
         "application/x-pdf",
@@ -305,10 +325,7 @@ async def _save_pdf_upload(
     if upload.content_type not in allowed_content_types:
         raise HTTPException(
             status_code=415,
-            detail=(
-                f"{upload.filename or 'Uploaded file'} "
-                "must be a PDF"
-            ),
+            detail=f"{upload.filename or 'Uploaded file'} must be a PDF",
         )
 
     total_bytes = 0
@@ -317,48 +334,35 @@ async def _save_pdf_upload(
         with destination.open("wb") as output:
             while True:
                 chunk = await upload.read(1024 * 1024)
-
                 if not chunk:
                     break
 
                 total_bytes += len(chunk)
-
                 if total_bytes > MAX_PDF_BYTES:
                     raise HTTPException(
                         status_code=413,
-                        detail=(
-                            f"{upload.filename or 'Uploaded file'} "
-                            "exceeds the 20 MB limit"
-                        ),
+                        detail=f"{upload.filename or 'Uploaded file'} exceeds 20 MB limit",
                     )
-
                 output.write(chunk)
 
         if total_bytes == 0:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"{upload.filename or 'Uploaded file'} "
-                    "is empty"
-                ),
+                detail=f"{upload.filename or 'Uploaded file'} is empty",
             )
 
         with destination.open("rb") as saved_file:
             if saved_file.read(5) != b"%PDF-":
                 raise HTTPException(
                     status_code=415,
-                    detail=(
-                        f"{upload.filename or 'Uploaded file'} "
-                        "does not have a valid PDF signature"
-                    ),
+                    detail=f"{upload.filename or 'Uploaded file'} lacks a valid PDF signature",
                 )
-
     finally:
         await upload.close()
 
 
 # ============================================================
-# REQUEST SCHEMAS
+# REQUEST & RESPONSE SCHEMAS
 # ============================================================
 
 class ModelSummary(BaseModel):
@@ -452,27 +456,16 @@ class AuditRequest(BaseModel):
 
 
 class ListingFetchRequest(BaseModel):
-    url: str = Field(
-        ...,
-        description=(
-            "Public real-estate listing URL, such "
-            "as an MLS, brokerage, or portal page."
-        ),
-    )
+    url: str = Field(..., description="Public real-estate listing URL")
 
 
 # ============================================================
-# RESPONSE SHAPING
+# RESPONSE SHAPING & VALUATION LOGIC
 # ============================================================
 
 def _shape_valuation(result):
     if not result or not result.get("ok"):
-        reason = (
-            result.get("reason")
-            if result
-            else None
-        )
-
+        reason = result.get("reason") if result else None
         status_code = 422 if reason in {
             "could_not_resolve_geography",
             "could_not_geocode",
@@ -483,9 +476,7 @@ def _shape_valuation(result):
             detail=reason or "The valuation engine did not return a result",
         )
 
-    geographic_predictors = (
-        result.get("geographic_features") or {}
-    )
+    geographic_predictors = result.get("geographic_features") or {}
 
     if (
         isinstance(geographic_predictors, list)
@@ -501,63 +492,29 @@ def _shape_valuation(result):
         "range_method": result.get("range_method"),
         "as_of": result.get("asof"),
         "model": result.get("model") or {},
-
         "geography": {
-            "source": result.get(
-                "geography_source"
-            ),
+            "source": result.get("geography_source"),
             "latitude": result.get("latitude"),
             "longitude": result.get("longitude"),
-            "tract_fips": result.get(
-                "tract_fips"
-            ),
-            "tract_matched": result.get(
-                "tract_matched"
-            ),
+            "tract_fips": result.get("tract_fips"),
+            "tract_matched": result.get("tract_matched"),
             "predictors": geographic_predictors,
         },
-
         "input_diagnostics": {
-            "n_provided": result.get(
-                "n_provided"
-            ),
-            "input_mode": result.get(
-                "input_mode"
-            ),
-            "supplied_variables": result.get(
-                "supplied_variables"
-            ) or [],
-            "imputed_impact_share": result.get(
-                "imputed_impact_share"
-            ),
-            "imputed_variables": result.get(
-                "imputed_variables"
-            ) or [],
-            "ignored_variables": result.get(
-                "ignored_variables"
-            ) or [],
+            "n_provided": result.get("n_provided"),
+            "input_mode": result.get("input_mode"),
+            "supplied_variables": result.get("supplied_variables") or [],
+            "imputed_impact_share": result.get("imputed_impact_share"),
+            "imputed_variables": result.get("imputed_variables") or [],
+            "ignored_variables": result.get("ignored_variables") or [],
         },
-
         "drivers": result.get("drivers") or [],
         "narrative": result.get("narrative") or {},
-
-        "suggested_follow_up_questions": (
-            result.get(
-                "suggest_asking_about",
-                [],
-            )
-        ),
+        "suggested_follow_up_questions": result.get("suggest_asking_about", []),
     }
 
 
-# ============================================================
-# CLI FALLBACK
-# ============================================================
-
-def _valuation_cli(
-    property_record: dict,
-    asof: Optional[str] = None,
-):
+def _valuation_cli(property_record: dict, asof: Optional[str] = None):
     try:
         payload = json.dumps({
             "property_record": property_record,
@@ -578,7 +535,6 @@ def _valuation_cli(
             )
 
         result = json.loads(process.stdout)
-
         return _shape_valuation(result)
 
     except Exception as error:
@@ -590,14 +546,7 @@ def _valuation_cli(
         ) from error
 
 
-# ============================================================
-# SHARED VALUATION LOGIC
-# ============================================================
-
-def _run_valuation(
-    record: PropertyRecord,
-    as_of: Optional[date] = None,
-):
+def _run_valuation(record: PropertyRecord, as_of: Optional[date] = None):
     property_record = record.model_dump(
         mode="json",
         exclude_none=False,
@@ -609,39 +558,25 @@ def _run_valuation(
             property_record=property_record,
             asof=asof,
         )
-
     except Exception as error:
-        print(
-            "[valuation] background worker failed "
-            f"({error}); invoking CLI fallback..."
-        )
-
-        return _valuation_cli(
-            property_record=property_record,
-            asof=asof,
-        )
+        print(f"[valuation] background worker failed ({error}); invoking CLI fallback...")
+        return _valuation_cli(property_record=property_record, asof=asof)
 
     return _shape_valuation(result)
 
 
 # ============================================================
-# DESCRIPTIVE NARRATIVE GENERATION
+# NARRATIVE GENERATION FUNCTIONS
 # ============================================================
 
 def _load_narrative_prompt():
     try:
-        prompt = NARRATIVE_PROMPT_PATH.read_text(
-            encoding="utf-8"
-        ).strip()
+        prompt = NARRATIVE_PROMPT_PATH.read_text(encoding="utf-8").strip()
     except OSError as error:
-        raise RuntimeError(
-            "descriptive_essay.txt could not be loaded"
-        ) from error
+        raise RuntimeError("descriptive_essay.txt could not be loaded") from error
 
     if not prompt:
-        raise RuntimeError(
-            "descriptive_essay.txt is empty"
-        )
+        raise RuntimeError("descriptive_essay.txt is empty")
 
     return prompt
 
@@ -660,40 +595,25 @@ def _load_seller_audit_prompt():
 
 def _narrative_configuration():
     model = os.getenv("ANTHROPIC_NARRATIVE_MODEL")
-
     if not model:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Narrative generation is not configured: "
-                "ANTHROPIC_NARRATIVE_MODEL is missing"
-            ),
+            detail="Narrative generation is not configured: ANTHROPIC_NARRATIVE_MODEL is missing",
         )
 
-    raw_max_tokens = os.getenv(
-        "NARRATIVE_MAX_TOKENS",
-        "3000",
-    )
-
+    raw_max_tokens = os.getenv("NARRATIVE_MAX_TOKENS", "3000")
     try:
         max_tokens = int(raw_max_tokens)
     except ValueError as error:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Narrative generation is not configured: "
-                "NARRATIVE_MAX_TOKENS must be an integer"
-            ),
+            detail="Narrative generation is not configured: NARRATIVE_MAX_TOKENS must be an integer",
         ) from error
 
     if not 500 <= max_tokens <= 8000:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Narrative generation is not configured: "
-                "NARRATIVE_MAX_TOKENS must be between "
-                "500 and 8000"
-            ),
+            detail="Narrative generation is not configured: NARRATIVE_MAX_TOKENS must be between 500 and 8000",
         )
 
     return model, max_tokens
@@ -794,17 +714,11 @@ def _generate_seller_audit(property_record: dict, valuation: dict):
     }
 
 
-def _generate_descriptive_essay(
-    property_record: dict,
-    valuation: dict,
-):
+def _generate_descriptive_essay(property_record: dict, valuation: dict):
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Narrative generation is not configured: "
-                "ANTHROPIC_API_KEY is missing"
-            ),
+            detail="Narrative generation is not configured: ANTHROPIC_API_KEY is missing",
         )
 
     model, max_tokens = _narrative_configuration()
@@ -812,10 +726,7 @@ def _generate_descriptive_essay(
     try:
         prompt = _load_narrative_prompt()
     except RuntimeError as error:
-        raise HTTPException(
-            status_code=503,
-            detail=str(error),
-        ) from error
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
     evidence_packet = {
         "property_record": property_record,
@@ -824,16 +735,11 @@ def _generate_descriptive_essay(
         "verified_community_context": None,
         "instructions": (
             "Write the completed report in Markdown. "
-            "Return only the report. No counterfactual "
-            "valuations or independently verified community "
-            "context were supplied for this request. Do not "
-            "invent them."
+            "Return only the report."
         ),
     }
 
-    client = Anthropic(
-        api_key=os.environ["ANTHROPIC_API_KEY"]
-    )
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     try:
         response = client.messages.create(
@@ -843,9 +749,7 @@ def _generate_descriptive_essay(
                 {
                     "type": "text",
                     "text": prompt,
-                    "cache_control": {
-                        "type": "ephemeral"
-                    },
+                    "cache_control": {"type": "ephemeral"},
                 }
             ],
             messages=[
@@ -864,124 +768,72 @@ def _generate_descriptive_essay(
             ],
         )
     except Exception as error:
-        print(
-            "[narrative-generation] failed: "
-            f"{type(error).__name__}: {error}"
-        )
+        print(f"[narrative-generation] failed: {type(error).__name__}: {error}")
         raise HTTPException(
             status_code=502,
-            detail=(
-                "Narrative generation failed. "
-                "Property extraction and valuation had "
-                "already completed."
-            ),
+            detail="Narrative generation failed.",
         ) from error
 
     essay_parts = [
         block.text
         for block in response.content
-        if getattr(block, "type", None) == "text"
-        and getattr(block, "text", None)
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
     ]
     essay = "\n".join(essay_parts).strip()
 
     if not essay:
         raise HTTPException(
             status_code=502,
-            detail=(
-                "Narrative generation returned no text. "
-                "Property extraction and valuation had "
-                "already completed."
-            ),
+            detail="Narrative generation returned no text.",
         )
 
     usage = response.usage
 
     return {
         "status": (
-            "incomplete"
-            if response.stop_reason == "max_tokens"
-            else "complete"
+            "incomplete" if response.stop_reason == "max_tokens" else "complete"
         ),
         "descriptive_essay": essay,
         "metadata": {
             "model": model,
-            "prompt_version": (
-                NARRATIVE_PROMPT_VERSION
-            ),
+            "prompt_version": NARRATIVE_PROMPT_VERSION,
             "stop_reason": response.stop_reason,
             "usage": {
-                "input_tokens": getattr(
-                    usage,
-                    "input_tokens",
-                    0,
-                ),
-                "output_tokens": getattr(
-                    usage,
-                    "output_tokens",
-                    0,
-                ),
-                "cache_creation_input_tokens": getattr(
-                    usage,
-                    "cache_creation_input_tokens",
-                    0,
-                ),
-                "cache_read_input_tokens": getattr(
-                    usage,
-                    "cache_read_input_tokens",
-                    0,
-                ),
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0),
+                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0),
             },
         },
     }
 
 
 # ============================================================
-# SHARED DOCUMENT EXTRACTION
+# SHARED DOCUMENT EXTRACTION (DIRECT FILE UPLOADS)
 # ============================================================
 
-async def _extract_uploaded_property(
-    mls: UploadFile,
-    disclosure: UploadFile,
-):
+async def _extract_uploaded_property(mls: UploadFile, disclosure: UploadFile):
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Document ingestion is not configured: "
-                "ANTHROPIC_API_KEY is missing"
-            ),
+            detail="Document ingestion is not configured: ANTHROPIC_API_KEY is missing",
         )
 
     anthropic_model = os.getenv("ANTHROPIC_MODEL")
-
     if not anthropic_model:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Document ingestion is not configured: "
-                "ANTHROPIC_MODEL is missing"
-            ),
+            detail="Document ingestion is not configured: ANTHROPIC_MODEL is missing",
         )
 
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="property-extraction-",
-        ) as temporary_directory:
+        with tempfile.TemporaryDirectory(prefix="property-extraction-") as temporary_directory:
             temporary_path = Path(temporary_directory)
             mls_path = temporary_path / "mls.pdf"
-            disclosure_path = (
-                temporary_path / "disclosure.pdf"
-            )
+            disclosure_path = temporary_path / "disclosure.pdf"
 
-            await _save_pdf_upload(
-                mls,
-                mls_path,
-            )
-            await _save_pdf_upload(
-                disclosure,
-                disclosure_path,
-            )
+            await _save_pdf_upload(mls, mls_path)
+            await _save_pdf_upload(disclosure, disclosure_path)
 
             return await run_in_threadpool(
                 build_property_record,
@@ -992,18 +844,11 @@ async def _extract_uploaded_property(
 
     except HTTPException:
         raise
-
     except Exception as error:
-        print(
-            "[document-extraction] failed: "
-            f"{type(error).__name__}: {error}"
-        )
+        print(f"[document-extraction] failed: {type(error).__name__}: {error}")
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Property document extraction failed. "
-                "See service logs for the internal error."
-            ),
+            detail="Property document extraction failed.",
         ) from error
 
 
@@ -1043,130 +888,11 @@ def health():
     }
 
 
-@app.post(
-    "/extract_property_record",
-    response_model=PropertyRecord,
-)
-async def extract_property_record(
-    mls: Annotated[
-        UploadFile,
-        File(
-            ...,
-            description="MLS listing PDF",
-        ),
-    ],
-    disclosure: Annotated[
-        UploadFile,
-        File(
-            ...,
-            description="Seller property-disclosure PDF",
-        ),
-    ],
-    x_ingestion_key: Annotated[
-        Optional[str],
-        Header(
-            description=(
-                "Application-level credential for the "
-                "document-ingestion endpoint"
-            ),
-        ),
-    ] = None,
-):
-    _verify_ingestion_key(x_ingestion_key)
-
-    return await _extract_uploaded_property(
-        mls,
-        disclosure,
-    )
-
-
-@app.post(
-    "/generate_descriptive_essay",
-    response_model=DescriptiveEssayResponse,
-)
-async def generate_property_descriptive_essay(
-    mls: Annotated[
-        UploadFile,
-        File(
-            ...,
-            description="MLS listing PDF",
-        ),
-    ],
-    disclosure: Annotated[
-        UploadFile,
-        File(
-            ...,
-            description="Seller property-disclosure PDF",
-        ),
-    ],
-    as_of: Annotated[
-        Optional[date],
-        Form(
-            description=(
-                "Optional valuation date in YYYY-MM-DD "
-                "format"
-            ),
-        ),
-    ] = None,
-    x_ingestion_key: Annotated[
-        Optional[str],
-        Header(
-            description=(
-                "Application-level credential for the "
-                "document-ingestion endpoint"
-            ),
-        ),
-    ] = None,
-):
-    _verify_ingestion_key(x_ingestion_key)
-    _narrative_configuration()
-
-    record = await _extract_uploaded_property(
-        mls,
-        disclosure,
-    )
-
-    valuation = await run_in_threadpool(
-        _run_valuation,
-        record,
-        as_of,
-    )
-
-    property_record = record.model_dump(
-        mode="json",
-        exclude_none=False,
-    )
-
-    narrative_result = await run_in_threadpool(
-        _generate_descriptive_essay,
-        property_record,
-        valuation,
-    )
-
-    return {
-        "status": narrative_result["status"],
-        "property_record": property_record,
-        "valuation": valuation,
-        "descriptive_essay": narrative_result[
-            "descriptive_essay"
-        ],
-        "scenarios": [],
-        "narrative_metadata": narrative_result[
-            "metadata"
-        ],
-    }
-
-
-@app.post(
-    "/generate_seller_audit",
-    response_model=DescriptiveEssayResponse,
-)
-async def generate_seller_audit(
-    request: AuditRequest,
-):
+@app.post("/generate_seller_audit", response_model=DescriptiveEssayResponse)
+async def generate_seller_audit(request: AuditRequest):
     """
-    Ingest property documents from Google Drive URLs, extract canonical property records,
-    run the full R valuation model, and generate a seller-facing positioning & price diagnostic audit.
+    Ingests property documents from Google Drive URLs, extracts canonical property records,
+    runs the full R valuation model, and generates a seller-facing positioning & price diagnostic audit.
     """
     if not request.document_urls:
         raise HTTPException(
@@ -1190,7 +916,7 @@ async def generate_seller_audit(
 
             for idx, url in enumerate(request.document_urls):
                 destination_pdf = temp_path / f"document_{idx}.pdf"
-                download_gdrive_pdf(url, destination_pdf)
+                _download_gdrive_pdf(url, destination_pdf)
                 downloaded_pdf_paths.append(str(destination_pdf))
 
             mls_path = downloaded_pdf_paths[0]
@@ -1248,113 +974,95 @@ async def generate_seller_audit(
     }
 
 
-@app.post(
-    "/estimate_home_value",
-    response_model=ValuationResponse,
-)
-def estimate_home_value(
-    record: PropertyRecord,
-    as_of: Optional[date] = None,
+@app.post("/extract_property_record", response_model=PropertyRecord)
+async def extract_property_record(
+    mls: Annotated[UploadFile, File(..., description="MLS listing PDF")],
+    disclosure: Annotated[UploadFile, File(..., description="Seller property-disclosure PDF")],
+    x_ingestion_key: Annotated[Optional[str], Header(description="Ingestion API Key")] = None,
 ):
+    _verify_ingestion_key(x_ingestion_key)
+    return await _extract_uploaded_property(mls, disclosure)
+
+
+@app.post("/generate_descriptive_essay", response_model=DescriptiveEssayResponse)
+async def generate_property_descriptive_essay(
+    mls: Annotated[UploadFile, File(..., description="MLS listing PDF")],
+    disclosure: Annotated[UploadFile, File(..., description="Seller property-disclosure PDF")],
+    as_of: Annotated[Optional[date], Form(description="Optional valuation date")] = None,
+    x_ingestion_key: Annotated[Optional[str], Header(description="Ingestion API Key")] = None,
+):
+    _verify_ingestion_key(x_ingestion_key)
+    _narrative_configuration()
+
+    record = await _extract_uploaded_property(mls, disclosure)
+    valuation = await run_in_threadpool(_run_valuation, record, as_of)
+    property_record = record.model_dump(mode="json", exclude_none=False)
+
+    narrative_result = await run_in_threadpool(
+        _generate_descriptive_essay,
+        property_record,
+        valuation,
+    )
+
+    return {
+        "status": narrative_result["status"],
+        "property_record": property_record,
+        "valuation": valuation,
+        "descriptive_essay": narrative_result["descriptive_essay"],
+        "scenarios": [],
+        "narrative_metadata": narrative_result["metadata"],
+    }
+
+
+@app.post("/estimate_home_value", response_model=ValuationResponse)
+def estimate_home_value(record: PropertyRecord, as_of: Optional[date] = None):
     return _run_valuation(record, as_of)
 
 
 @app.post("/fetch_listing_specs")
-def fetch_listing_specs(
-    req: ListingFetchRequest,
-):
+def fetch_listing_specs(req: ListingFetchRequest):
     try:
         headers = {
             "User-Agent": (
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0 Safari/537.36"
             ),
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-        response = requests.get(
-            req.url,
-            headers=headers,
-            timeout=20,
-        )
-
+        response = requests.get(req.url, headers=headers, timeout=20)
         if response.status_code != 200:
             raise HTTPException(
                 status_code=response.status_code,
-                detail=(
-                    "Listing provider blocked "
-                    "automated access"
-                ),
+                detail="Listing provider blocked automated access",
             )
 
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser",
-        )
+        soup = BeautifulSoup(response.text, "html.parser")
 
         def meta(key, attr="property"):
-            tag = soup.find(
-                "meta",
-                {attr: key},
-            )
-
-            if tag and tag.has_attr("content"):
-                return tag["content"]
-
-            return None
+            tag = soup.find("meta", {attr: key})
+            return tag["content"] if tag and tag.has_attr("content") else None
 
         data = {
-            "title": (
-                soup.title.string
-                if soup.title
-                else None
-            ),
+            "title": soup.title.string if soup.title else None,
             "og_title": meta("og:title"),
-            "og_description": meta(
-                "og:description"
-            ),
-            "description": meta(
-                "description",
-                attr="name",
-            ),
+            "og_description": meta("og:description"),
+            "description": meta("description", attr="name"),
             "extracted_structured_blocks": [],
         }
 
-        for script in soup.find_all(
-            "script",
-            {"type": "application/ld+json"},
-        ):
+        for script in soup.find_all("script", {"type": "application/ld+json"}):
             text = (script.string or "").strip()
-
             if text:
-                data[
-                    "extracted_structured_blocks"
-                ].append(text[:4000])
+                data["extracted_structured_blocks"].append(text[:4000])
 
-        if not any([
-            data["title"],
-            data["og_description"],
-            data["extracted_structured_blocks"],
-        ]):
-            return {
-                "error": (
-                    "webpage loaded but its content "
-                    "was unreadable by the scraper"
-                )
-            }
+        if not any([data["title"], data["og_description"], data["extracted_structured_blocks"]]):
+            return {"error": "webpage loaded but content was unreadable"}
 
         return data
 
     except HTTPException:
         raise
-
     except Exception as error:
-        return {
-            "error": (
-                "web scraper exception encountered: "
-                f"{error}"
-            )
-        }
+        return {"error": f"web scraper exception encountered: {error}"}
