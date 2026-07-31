@@ -1,9 +1,9 @@
+from __future__ import annotations
+
 import re
 import io
 import requests
 from pypdf import PdfReader
-from __future__ import annotations
-
 import base64
 import hashlib
 import shutil
