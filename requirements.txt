@@ -8,3 +8,4 @@ anthropic>=0.49
 pdfplumber>=0.11
 pillow>=10
 python-multipart>=0.0.9
+pypdf
