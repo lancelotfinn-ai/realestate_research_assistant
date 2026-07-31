@@ -123,16 +123,50 @@ def get_gdrive_direct_url(share_url: str) -> str:
         return f"https://drive.google.com/uc?export=download&id={file_id}"
     return share_url
 
+import re
+import io
+import requests
+from pypdf import PdfReader
+
+def get_gdrive_direct_url(share_url: str) -> str:
+    """Extracts the file ID from any standard Google Drive share link and builds a direct download URL."""
+    pattern = r'(?:file/d/|id=)([\w-]+)'
+    match = re.search(pattern, share_url)
+    if match:
+        file_id = match.group(1)
+        return f"https://drive.google.com/uc?export=download&id={file_id}"
+    return share_url
+
 def extract_text_from_url(url: str) -> str:
-    """Downloads a public Google Drive PDF directly into memory and extracts all text."""
+    """Downloads a public Google Drive PDF directly into memory, handling Google Drive warnings and redirects."""
     direct_url = get_gdrive_direct_url(url)
     
-    # Download file stream into memory
-    response = requests.get(direct_url, allow_redirects=True)
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    # 1. Fetch the file
+    response = session.get(direct_url, headers=headers, allow_redirects=True)
     response.raise_for_status()
     
-    # Parse PDF directly from bytes stream
-    pdf_file = io.BytesIO(response.content)
+    content = response.content
+    
+    # 2. Check if Google Drive returned an HTML confirmation page instead of PDF bytes
+    if not content.startswith(b"%PDF"):
+        # Retry with Google's direct confirmation parameter
+        confirm_url = f"{direct_url}&confirm=t"
+        response = session.get(confirm_url, headers=headers, allow_redirects=True)
+        content = response.content
+
+    # 3. Validate that we actually received a PDF
+    if not content.startswith(b"%PDF"):
+        raise ValueError(
+            f"The link '{url}' did not return a valid PDF. Make sure the Google Drive permissions are set to 'Anyone with the link can view'."
+        )
+    
+    # 4. Parse PDF directly from bytes stream
+    pdf_file = io.BytesIO(content)
     reader = PdfReader(pdf_file)
     
     extracted_text = ""
