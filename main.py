@@ -10,11 +10,6 @@ from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Optional
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from document_ingest import process_document_urls  # Import our new helper
-from extract_property import extract_property_features
-# Keep your existing imports (e.g. extract_property, r_worker, etc.)
 
 import requests
 from bs4 import BeautifulSoup
@@ -30,6 +25,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from anthropic import Anthropic
 
+from document_ingest import download_gdrive_pdf, process_document_urls
 from extract_property import build_property_record
 from property_schema import PropertyRecord
 
@@ -37,7 +33,7 @@ from property_schema import PropertyRecord
 BASE_DIR = Path(__file__).resolve().parent
 NARRATIVE_PROMPT_PATH = BASE_DIR / "descriptive_essay.txt"
 NARRATIVE_PROMPT_VERSION = "descriptive-essay-v1"
-# --- NEW: Seller Positioning Audit Prompt ---
+
 SELLER_AUDIT_PROMPT_PATH = BASE_DIR / "seller_positioning_audit.txt"
 SELLER_AUDIT_PROMPT_VERSION = "seller-audit-v1"
 
@@ -74,8 +70,6 @@ class RWorker:
             self.cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            # Let R diagnostics appear in Render logs. The worker reserves
-            # stdout exclusively for its newline-delimited JSON protocol.
             stderr=None,
             bufsize=0,
         )
@@ -262,53 +256,17 @@ app = FastAPI(
     version="3.0.0",
 )
 
-class AuditRequest(BaseModel):
-    document_urls: list[str]  # Accepts an array of Google Drive links from GPT
-
-@app.post("/seller_positioning_audit")
-async def seller_positioning_audit(request: AuditRequest):
-    try:
-        # 1. Download and extract text from provided Google Drive links
-        combined_document_text = process_document_urls(request.document_urls)
-        
-        # 2. Extract structured property features (uses your existing extract_property logic)
-        property_features = extract_property_features(combined_document_text)
-        
-        # 3. Run valuation engine in R (uses your existing r_worker script)
-        valuation_results = run_valuation_model(property_features)
-        
-        # 4. Fill seller_positioning_audit.txt template with valuation_results
-        full_audit_narrative = generate_audit_report(valuation_results, combined_document_text)
-        
-        return {
-            "status": "success",
-            "valuation_narrative": full_audit_narrative
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================
 # DOCUMENT-INGESTION CONFIGURATION
 # ============================================================
 
-# This limit applies separately to the MLS PDF and disclosure
-# PDF. Files are streamed to temporary storage rather than read
-# into memory in one operation.
 MAX_PDF_BYTES = 20 * 1024 * 1024
 
 
 def _verify_ingestion_key(
     supplied_key: Optional[str],
 ):
-    """
-    Protect the Claude-backed document endpoint from public use.
-
-    INGESTION_API_KEY is an application-level credential chosen
-    by the service owner. It is distinct from ANTHROPIC_API_KEY,
-    which must never be sent by a client.
-    """
-
     expected_key = os.getenv("INGESTION_API_KEY")
 
     if not expected_key:
@@ -338,14 +296,6 @@ async def _save_pdf_upload(
     upload: UploadFile,
     destination: Path,
 ):
-    """
-    Stream an uploaded PDF to a request-scoped temporary file.
-
-    Content-Type is checked as an early diagnostic, and the PDF
-    file signature is checked after writing. The caller owns the
-    temporary directory and removes it after extraction.
-    """
-
     allowed_content_types = {
         "application/pdf",
         "application/x-pdf",
@@ -485,8 +435,20 @@ class DescriptiveEssayResponse(BaseModel):
     property_record: PropertyRecord
     valuation: ValuationResponse
     descriptive_essay: str
+    valuation_narrative: Optional[str] = None
     scenarios: list[dict] = Field(default_factory=list)
     narrative_metadata: NarrativeMetadata
+
+
+class AuditRequest(BaseModel):
+    document_urls: list[str] = Field(
+        ...,
+        description="List of public Google Drive URLs for MLS listing and seller disclosure PDFs."
+    )
+    as_of: Optional[date] = Field(
+        default=None,
+        description="Optional valuation date in YYYY-MM-DD format"
+    )
 
 
 class ListingFetchRequest(BaseModel):
@@ -504,11 +466,6 @@ class ListingFetchRequest(BaseModel):
 # ============================================================
 
 def _shape_valuation(result):
-    """
-    Convert the R worker result into the documented public response without
-    discarding model provenance, drivers, narrative, or missing-input detail.
-    """
-
     if not result or not result.get("ok"):
         reason = (
             result.get("reason")
@@ -530,8 +487,6 @@ def _shape_valuation(result):
         result.get("geographic_features") or {}
     )
 
-    # jsonlite serializes a one-row R data.frame as a one-element array when
-    # dataframe="rows". Expose the row itself in the public API.
     if (
         isinstance(geographic_predictors, list)
         and len(geographic_predictors) == 1
@@ -603,10 +558,6 @@ def _valuation_cli(
     property_record: dict,
     asof: Optional[str] = None,
 ):
-    """
-    Run one fresh R process if the persistent worker fails.
-    """
-
     try:
         payload = json.dumps({
             "property_record": property_record,
@@ -647,10 +598,6 @@ def _run_valuation(
     record: PropertyRecord,
     as_of: Optional[date] = None,
 ):
-    """
-    Pass a validated canonical property record to R. All feature engineering
-    stays in valuation.R so the training encodings have one implementation.
-    """
     property_record = record.model_dump(
         mode="json",
         exclude_none=False,
@@ -674,10 +621,6 @@ def _run_valuation(
             asof=asof,
         )
 
-    # Keep model/input errors returned by a healthy worker distinct from
-    # transport failures. _shape_valuation converts them to an appropriate
-    # HTTP response without rerunning the same invalid request in a new R
-    # process.
     return _shape_valuation(result)
 
 
@@ -686,10 +629,6 @@ def _run_valuation(
 # ============================================================
 
 def _load_narrative_prompt():
-    """
-    Load the fixed narrative instructions shipped with the service.
-    """
-
     try:
         prompt = NARRATIVE_PROMPT_PATH.read_text(
             encoding="utf-8"
@@ -706,8 +645,8 @@ def _load_narrative_prompt():
 
     return prompt
 
+
 def _load_seller_audit_prompt():
-    """Load the seller positioning audit instructions from disk."""
     try:
         prompt = SELLER_AUDIT_PROMPT_PATH.read_text(encoding="utf-8").strip()
     except OSError as error:
@@ -719,8 +658,48 @@ def _load_seller_audit_prompt():
     return prompt
 
 
+def _narrative_configuration():
+    model = os.getenv("ANTHROPIC_NARRATIVE_MODEL")
+
+    if not model:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "ANTHROPIC_NARRATIVE_MODEL is missing"
+            ),
+        )
+
+    raw_max_tokens = os.getenv(
+        "NARRATIVE_MAX_TOKENS",
+        "3000",
+    )
+
+    try:
+        max_tokens = int(raw_max_tokens)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "NARRATIVE_MAX_TOKENS must be an integer"
+            ),
+        ) from error
+
+    if not 500 <= max_tokens <= 8000:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "NARRATIVE_MAX_TOKENS must be between "
+                "500 and 8000"
+            ),
+        )
+
+    return model, max_tokens
+
+
 def _generate_seller_audit(property_record: dict, valuation: dict):
-    """Ask Claude to generate a seller-facing positioning & price audit."""
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=503,
@@ -815,61 +794,10 @@ def _generate_seller_audit(property_record: dict, valuation: dict):
     }
 
 
-def _narrative_configuration():
-    model = os.getenv(
-        "ANTHROPIC_NARRATIVE_MODEL"
-    )
-
-    if not model:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Narrative generation is not configured: "
-                "ANTHROPIC_NARRATIVE_MODEL is missing"
-            ),
-        )
-
-    raw_max_tokens = os.getenv(
-        "NARRATIVE_MAX_TOKENS",
-        "3000",
-    )
-
-    try:
-        max_tokens = int(raw_max_tokens)
-    except ValueError as error:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Narrative generation is not configured: "
-                "NARRATIVE_MAX_TOKENS must be an integer"
-            ),
-        ) from error
-
-    if not 500 <= max_tokens <= 8000:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Narrative generation is not configured: "
-                "NARRATIVE_MAX_TOKENS must be between "
-                "500 and 8000"
-            ),
-        )
-
-    return model, max_tokens
-
-
 def _generate_descriptive_essay(
     property_record: dict,
     valuation: dict,
 ):
-    """
-    Ask Claude to interpret, but never recompute, the structured valuation.
-
-    The prompt is cached because it is identical across properties. Dynamic
-    property evidence remains in the user message so it cannot contaminate
-    later requests.
-    """
-
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=503,
@@ -1016,10 +944,6 @@ async def _extract_uploaded_property(
     mls: UploadFile,
     disclosure: UploadFile,
 ):
-    """
-    Save, validate, extract, and validate one pair of property PDFs.
-    """
-
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=503,
@@ -1088,7 +1012,6 @@ async def _extract_uploaded_property(
 # ============================================================
 
 @app.get("/health")
-@app.get("/health")
 def health():
     narrative_prompt_loaded = False
     seller_audit_prompt_loaded = False
@@ -1149,15 +1072,6 @@ async def extract_property_record(
         ),
     ] = None,
 ):
-    """
-    Extract an evidence-backed canonical PropertyRecord from an
-    MLS listing PDF and seller disclosure PDF.
-
-    The documents are stored only in a request-scoped temporary
-    directory. PDF rendering, the Anthropic request, merging, and
-    Pydantic validation are delegated to build_property_record().
-    """
-
     _verify_ingestion_key(x_ingestion_key)
 
     return await _extract_uploaded_property(
@@ -1204,11 +1118,6 @@ async def generate_property_descriptive_essay(
         ),
     ] = None,
 ):
-    """
-    Extract a canonical property record, run the full R valuation model,
-    and ask the configured narrative model to return a descriptive report.
-    """
-
     _verify_ingestion_key(x_ingestion_key)
     _narrative_configuration()
 
@@ -1253,36 +1162,66 @@ async def generate_property_descriptive_essay(
     response_model=DescriptiveEssayResponse,
 )
 async def generate_seller_audit(
-    mls: Annotated[
-        UploadFile,
-        File(..., description="MLS listing PDF"),
-    ],
-    disclosure: Annotated[
-        UploadFile,
-        File(..., description="Seller property-disclosure PDF"),
-    ],
-    as_of: Annotated[
-        Optional[date],
-        Form(description="Optional valuation date in YYYY-MM-DD format"),
-    ] = None,
-    x_ingestion_key: Annotated[
-        Optional[str],
-        Header(description="Application-level credential for document ingestion"),
-    ] = None,
+    request: AuditRequest,
 ):
     """
-    Extract a canonical property record, run the full R valuation model,
-    and generate a seller-facing positioning & price diagnostic audit.
+    Ingest property documents from Google Drive URLs, extract canonical property records,
+    run the full R valuation model, and generate a seller-facing positioning & price diagnostic audit.
     """
-    _verify_ingestion_key(x_ingestion_key)
+    if not request.document_urls:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one Google Drive document URL must be provided."
+        )
+
+    anthropic_model = os.getenv("ANTHROPIC_MODEL")
+    if not anthropic_model:
+        raise HTTPException(
+            status_code=503,
+            detail="Document ingestion is not configured: ANTHROPIC_MODEL is missing",
+        )
+
     _narrative_configuration()
 
-    record = await _extract_uploaded_property(mls, disclosure)
+    try:
+        with tempfile.TemporaryDirectory(prefix="gdrive-seller-audit-") as temp_directory:
+            temp_path = Path(temp_directory)
+            downloaded_pdf_paths = []
+
+            for idx, url in enumerate(request.document_urls):
+                destination_pdf = temp_path / f"document_{idx}.pdf"
+                download_gdrive_pdf(url, destination_pdf)
+                downloaded_pdf_paths.append(str(destination_pdf))
+
+            mls_path = downloaded_pdf_paths[0]
+            disclosure_path = (
+                downloaded_pdf_paths[1]
+                if len(downloaded_pdf_paths) > 1
+                else downloaded_pdf_paths[0]
+            )
+
+            record = await run_in_threadpool(
+                build_property_record,
+                mls_path,
+                disclosure_path,
+                anthropic_model,
+            )
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as error:
+        print(f"[seller-audit-extraction] failed: {type(error).__name__}: {error}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Property document processing failed: {str(error)}"
+        ) from error
 
     valuation = await run_in_threadpool(
         _run_valuation,
         record,
-        as_of,
+        request.as_of,
     )
 
     property_record = record.model_dump(
@@ -1296,14 +1235,18 @@ async def generate_seller_audit(
         valuation,
     )
 
+    report_text = narrative_result["descriptive_essay"]
+
     return {
         "status": narrative_result["status"],
         "property_record": property_record,
         "valuation": valuation,
-        "descriptive_essay": narrative_result["descriptive_essay"],
+        "descriptive_essay": report_text,
+        "valuation_narrative": report_text,
         "scenarios": [],
         "narrative_metadata": narrative_result["metadata"],
     }
+
 
 @app.post(
     "/estimate_home_value",
@@ -1313,14 +1256,6 @@ def estimate_home_value(
     record: PropertyRecord,
     as_of: Optional[date] = None,
 ):
-    """
-    Apply the full Maine hedonic model to a canonical PropertyRecord.
-
-    The request body is the property-v1 JSON returned by
-    /extract_property_record. Supplied coordinates take priority over address
-    geocoding. When as_of is omitted, the current date is used.
-    """
-
     return _run_valuation(record, as_of)
 
 
@@ -1328,14 +1263,6 @@ def estimate_home_value(
 def fetch_listing_specs(
     req: ListingFetchRequest,
 ):
-    """
-    Retrieve basic metadata and JSON-LD blocks from a public
-    real-estate listing webpage.
-
-    This endpoint does not yet normalize the page into a complete
-    PropertyRecord.
-    """
-
     try:
         headers = {
             "User-Agent": (
