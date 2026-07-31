@@ -13,6 +13,7 @@ from typing import Annotated, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from document_ingest import process_document_urls  # Import our new helper
+from extract_property import extract_property_features
 # Keep your existing imports (e.g. extract_property, r_worker, etc.)
 
 import requests
