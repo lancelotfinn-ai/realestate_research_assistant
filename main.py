@@ -719,143 +719,143 @@ def _load_seller_audit_prompt():
     return prompt
 
 
-# def _generate_seller_audit(property_record: dict, valuation: dict):
-#     """Ask Claude to generate a seller-facing positioning & price audit."""
-#     if not os.getenv("ANTHROPIC_API_KEY"):
-#         raise HTTPException(
-#             status_code=503,
-#             detail="Narrative generation is not configured: ANTHROPIC_API_KEY is missing",
-#         )
+def _generate_seller_audit(property_record: dict, valuation: dict):
+    """Ask Claude to generate a seller-facing positioning & price audit."""
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="Narrative generation is not configured: ANTHROPIC_API_KEY is missing",
+        )
 
-#     model, max_tokens = _narrative_configuration()
+    model, max_tokens = _narrative_configuration()
 
-#     try:
-#         prompt = _load_seller_audit_prompt()
-#     except RuntimeError as error:
-#         raise HTTPException(status_code=503, detail=str(error)) from error
+    try:
+        prompt = _load_seller_audit_prompt()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
-#     evidence_packet = {
-#         "property_record": property_record,
-#         "baseline_valuation": valuation,
-#         "counterfactual_valuations": [],
-#         "verified_community_context": None,
-#         "instructions": (
-#             "Write the completed report in Markdown. "
-#             "Return only the report, including the Agent Summary Pitch "
-#             "and No-URL SMS Teaser at the end as specified in the prompt."
-#         ),
-#     }
+    evidence_packet = {
+        "property_record": property_record,
+        "baseline_valuation": valuation,
+        "counterfactual_valuations": [],
+        "verified_community_context": None,
+        "instructions": (
+            "Write the completed report in Markdown. "
+            "Return only the report, including the Agent Summary Pitch "
+            "and No-URL SMS Teaser at the end as specified in the prompt."
+        ),
+    }
 
-#     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-#     try:
-#         response = client.messages.create(
-#             model=model,
-#             max_tokens=max_tokens,
-#             system=[
-#                 {
-#                     "type": "text",
-#                     "text": prompt,
-#                     "cache_control": {"type": "ephemeral"},
-#                 }
-#             ],
-#             messages=[
-#                 {
-#                     "role": "user",
-#                     "content": (
-#                         "PROPERTY ANALYSIS PACKET\n\n"
-#                         + json.dumps(
-#                             evidence_packet,
-#                             ensure_ascii=False,
-#                             separators=(",", ":"),
-#                             default=str,
-#                         )
-#                     ),
-#                 }
-#             ],
-#         )
-#     except Exception as error:
-#         print(f"[seller-audit-generation] failed: {type(error).__name__}: {error}")
-#         raise HTTPException(
-#             status_code=502,
-#             detail="Seller audit generation failed. Valuation completed successfully.",
-#         ) from error
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[
+                {
+                    "type": "text",
+                    "text": prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "PROPERTY ANALYSIS PACKET\n\n"
+                        + json.dumps(
+                            evidence_packet,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            default=str,
+                        )
+                    ),
+                }
+            ],
+        )
+    except Exception as error:
+        print(f"[seller-audit-generation] failed: {type(error).__name__}: {error}")
+        raise HTTPException(
+            status_code=502,
+            detail="Seller audit generation failed. Valuation completed successfully.",
+        ) from error
 
-#     essay_parts = [
-#         block.text
-#         for block in response.content
-#         if getattr(block, "type", None) == "text" and getattr(block, "text", None)
-#     ]
-#     essay = "\n".join(essay_parts).strip()
+    essay_parts = [
+        block.text
+        for block in response.content
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+    ]
+    essay = "\n".join(essay_parts).strip()
 
-#     if not essay:
-#         raise HTTPException(
-#             status_code=502,
-#             detail="Seller audit generation returned no text.",
-#         )
+    if not essay:
+        raise HTTPException(
+            status_code=502,
+            detail="Seller audit generation returned no text.",
+        )
 
-#     usage = response.usage
+    usage = response.usage
 
-#     return {
-#         "status": (
-#             "incomplete" if response.stop_reason == "max_tokens" else "complete"
-#         ),
-#         "descriptive_essay": essay,
-#         "metadata": {
-#             "model": model,
-#             "prompt_version": SELLER_AUDIT_PROMPT_VERSION,
-#             "stop_reason": response.stop_reason,
-#             "usage": {
-#                 "input_tokens": getattr(usage, "input_tokens", 0),
-#                 "output_tokens": getattr(usage, "output_tokens", 0),
-#                 "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0),
-#                 "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0),
-#             },
-#         },
-#     }
+    return {
+        "status": (
+            "incomplete" if response.stop_reason == "max_tokens" else "complete"
+        ),
+        "descriptive_essay": essay,
+        "metadata": {
+            "model": model,
+            "prompt_version": SELLER_AUDIT_PROMPT_VERSION,
+            "stop_reason": response.stop_reason,
+            "usage": {
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0),
+                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0),
+            },
+        },
+    }
 
 
-# def _narrative_configuration():
-#     model = os.getenv(
-#         "ANTHROPIC_NARRATIVE_MODEL"
-#     )
+def _narrative_configuration():
+    model = os.getenv(
+        "ANTHROPIC_NARRATIVE_MODEL"
+    )
 
-#     if not model:
-#         raise HTTPException(
-#             status_code=503,
-#             detail=(
-#                 "Narrative generation is not configured: "
-#                 "ANTHROPIC_NARRATIVE_MODEL is missing"
-#             ),
-#         )
+    if not model:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "ANTHROPIC_NARRATIVE_MODEL is missing"
+            ),
+        )
 
-#     raw_max_tokens = os.getenv(
-#         "NARRATIVE_MAX_TOKENS",
-#         "3000",
-#     )
+    raw_max_tokens = os.getenv(
+        "NARRATIVE_MAX_TOKENS",
+        "3000",
+    )
 
-#     try:
-#         max_tokens = int(raw_max_tokens)
-#     except ValueError as error:
-#         raise HTTPException(
-#             status_code=503,
-#             detail=(
-#                 "Narrative generation is not configured: "
-#                 "NARRATIVE_MAX_TOKENS must be an integer"
-#             ),
-#         ) from error
+    try:
+        max_tokens = int(raw_max_tokens)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "NARRATIVE_MAX_TOKENS must be an integer"
+            ),
+        ) from error
 
-#     if not 500 <= max_tokens <= 8000:
-#         raise HTTPException(
-#             status_code=503,
-#             detail=(
-#                 "Narrative generation is not configured: "
-#                 "NARRATIVE_MAX_TOKENS must be between "
-#                 "500 and 8000"
-#             ),
-#         )
+    if not 500 <= max_tokens <= 8000:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Narrative generation is not configured: "
+                "NARRATIVE_MAX_TOKENS must be between "
+                "500 and 8000"
+            ),
+        )
 
-#     return model, max_tokens
+    return model, max_tokens
 
 
 def _generate_descriptive_essay(
