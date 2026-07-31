@@ -1,8 +1,11 @@
+import re
+import io
+import requests
+from pypdf import PdfReader
 from __future__ import annotations
 
 import base64
 import hashlib
-import io
 import shutil
 import subprocess
 import tempfile
@@ -110,3 +113,41 @@ def anthropic_content(document: DocumentArtifact) -> list[dict]:
 
     blocks.append({"type": "text", "text": "DOCUMENT END"})
     return blocks
+
+def get_gdrive_direct_url(share_url: str) -> str:
+    """Extracts the file ID from any standard Google Drive share link and builds a direct download URL."""
+    pattern = r'(?:file/d/|id=)([\w-]+)'
+    match = re.search(pattern, share_url)
+    if match:
+        file_id = match.group(1)
+        return f"https://drive.google.com/uc?export=download&id={file_id}"
+    return share_url
+
+def extract_text_from_url(url: str) -> str:
+    """Downloads a public Google Drive PDF directly into memory and extracts all text."""
+    direct_url = get_gdrive_direct_url(url)
+    
+    # Download file stream into memory
+    response = requests.get(direct_url, allow_redirects=True)
+    response.raise_for_status()
+    
+    # Parse PDF directly from bytes stream
+    pdf_file = io.BytesIO(response.content)
+    reader = PdfReader(pdf_file)
+    
+    extracted_text = ""
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            extracted_text += text + "\n"
+            
+    return extracted_text
+
+def process_document_urls(urls: list[str]) -> str:
+    """Iterates over a list of document URLs (e.g. MLS link + Disclosure link) 
+    and combines their extracted text into a single prompt-ready string."""
+    combined_text = ""
+    for url in urls:
+        doc_text = extract_text_from_url(url)
+        combined_text += f"\n--- DOCUMENT SOURCE: {url} ---\n" + doc_text
+    return combined_text
